@@ -147,32 +147,58 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		$product = wc_get_product( $wc_product_id );
 
 		if ( ! $product ) {
-			SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce product not found.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id ) );
+			SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce parent product not found.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_product_not_found' ) );
 		}
 
+		$target_product = $product;
+		$wc_variation_id = ! empty( $mapping->wc_variation_id ) ? absint( $mapping->wc_variation_id ) : 0;
+
+		if ( $wc_variation_id > 0 ) {
+			$variation = wc_get_product( $wc_variation_id );
+			
+			if ( ! $variation ) {
+				SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce variation not found.', array( 'shopify_item_id' => $shopify_item_id, 'wc_variation_id' => $wc_variation_id ) );
+				return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_variation_not_found' ) );
+			}
+
+			// Validate that the variation belongs to the mapped parent
+			if ( $variation->get_parent_id() !== $wc_product_id ) {
+				SWB_Logger::error( 'Webhook rejected: WooCommerce variation does not belong to mapped parent product.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id, 'wc_variation_id' => $wc_variation_id ) );
+				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'invalid_variation_parent' ) );
+			}
+
+			$target_product = $variation;
+		} else {
+			// If no variation mapped, ensure the parent product is actually simple
+			if ( $product->is_type( 'variable' ) ) {
+				SWB_Logger::error( 'Webhook rejected: Cannot update stock for variable product without a variation ID.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id ) );
+				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'variable_product_requires_variation' ) );
+			}
+		}
+
 		// 3. Update Stock
-		if ( ! $product->managing_stock() ) {
-			SWB_Logger::info( 'Webhook ignored: WooCommerce product is not managing stock.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id ) );
+		if ( ! $target_product->managing_stock() ) {
+			SWB_Logger::info( 'Webhook ignored: WooCommerce product/variation is not managing stock.', array( 'shopify_item_id' => $shopify_item_id, 'wc_target_id' => $target_product->get_id() ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'product_not_managing_stock' ) );
 		}
 
-		$current_stock = $product->get_stock_quantity();
+		$current_stock = $target_product->get_stock_quantity();
 		
 		if ( $current_stock !== $new_quantity ) {
 			// wc_update_product_stock handles the update securely and fires necessary hooks.
-			$result = wc_update_product_stock( $product, $new_quantity, 'set' );
+			$result = wc_update_product_stock( $target_product, $new_quantity, 'set' );
 
 			if ( is_wp_error( $result ) ) {
-				SWB_Logger::error( 'Stock update failed.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id, 'error' => $result->get_error_message() ) );
+				SWB_Logger::error( 'Stock update failed.', array( 'shopify_item_id' => $shopify_item_id, 'wc_target_id' => $target_product->get_id(), 'error' => $result->get_error_message() ) );
 				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'stock_update_failed' ) );
 			}
 			
-			SWB_Logger::info( 'Stock updated successfully.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id, 'old_stock' => $current_stock, 'new_stock' => $new_quantity ) );
+			SWB_Logger::info( 'Stock updated successfully.', array( 'shopify_item_id' => $shopify_item_id, 'wc_target_id' => $target_product->get_id(), 'old_stock' => $current_stock, 'new_stock' => $new_quantity ) );
 			return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_updated', 'new_stock' => $new_quantity ) );
 		}
 
-		SWB_Logger::info( 'Stock update skipped: Quantity is already correct.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id, 'stock' => $current_stock ) );
+		SWB_Logger::info( 'Stock update skipped: Quantity is already correct.', array( 'shopify_item_id' => $shopify_item_id, 'wc_target_id' => $target_product->get_id(), 'stock' => $current_stock ) );
 		return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_unchanged', 'new_stock' => $new_quantity ) );
 	}
 }

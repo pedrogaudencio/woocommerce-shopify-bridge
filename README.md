@@ -13,9 +13,10 @@ Phase 1 focuses strictly on webhook-driven inventory updates. It listens for `in
 
 - **Default Deny Architecture:** Products are ignored by default. Stock updates only occur for items that are explicitly mapped in the WooCommerce admin.
 - **Secure Webhooks:** Validates all incoming payloads using Shopify's standard HMAC-SHA256 signature verification.
-- **Explicit Mappings:** Custom admin interface to link Shopify Inventory Item IDs directly to WooCommerce Product or Variation IDs.
+- **Explicit Mappings:** Custom admin interface to link Shopify Product and Variant IDs directly to WooCommerce Product and Variation IDs.
+- **Variant-Level Stock Model:** Fully supports Shopify's variant-level stock ownership, assuming a single location. Validation rules ensure operators safely map simple-to-simple and variant-to-variation explicitly. 
 - **Safety Controls:** Includes a global kill switch to instantly disable sync without deleting settings or mappings.
-- **Diagnostics:** Integrates with the native WooCommerce Logger (`WC_Logger`) for clear operational visibility.
+- **Diagnostics:** Integrates with the native WooCommerce Logger (`WC_Logger`) for clear operational visibility, explicitly distinguishing between simple and variation updates.
 
 ## Setup & Testing
 

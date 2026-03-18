@@ -16,9 +16,15 @@ This plugin provides a secure, one-way stock synchronization from Shopify to Woo
 ### Mapping Products
 1. Go to **WooCommerce > Shopify Mappings**.
 2. Click **Add New Mapping**.
-3. Enter the **Shopify Item ID** (this is the `inventory_item_id` found in Shopify, not the product ID).
-4. Enter the **WooCommerce Product/Variant ID**.
-5. Check **Enable Sync** and click **Add Mapping**.
+3. **Shopify Product ID:** Enter the ID of the parent product in Shopify.
+4. **Shopify Variant ID:** Enter the variant ID if applicable (leave blank for simple products).
+5. **Shopify Inventory Item ID:** Enter the `inventory_item_id` (this is the ID sent in Shopify webhooks).
+6. **Assistance: SKU / EAN (Optional):** Enter a SKU/EAN for your own reference. This is not used for logic but helps operators identify mappings.
+7. **WooCommerce Parent Product ID:** Enter the ID of the parent product in WooCommerce.
+8. **WooCommerce Variation ID:** Enter the variation ID if applicable (leave blank for simple products).
+9. Check **Enable Sync** and click **Add Mapping**.
+
+*Note: The plugin enforces strict validation. You cannot map a Shopify variant to a WooCommerce simple product, or a simple Shopify product to a WooCommerce variation.*
 
 ### Shopify Webhook Configuration
 1. In your Shopify Admin, go to **Settings > Notifications**.
@@ -69,15 +75,18 @@ curl -X POST https://your-site.com/wp-json/shopify-bridge/v1/webhook/inventory \
 ```
 
 ### Expected Results:
-1. **Success:** Stock for product `123` changes to `42`. Response: `{"status":"success","reason":"stock_updated","new_stock":42}`.
-2. **Invalid Signature:** Change `test_secret` or alter the JSON payload without recalculating the HMAC. Result should be HTTP 401 Unauthorized.
-3. **Unmapped Item:** Change `inventory_item_id` in the JSON to `0000`. Result should be HTTP 200 OK with response: `{"status":"ignored","reason":"unmapped_item"}`.
-4. **Global Kill Switch Enabled:** Enable the kill switch in settings and resend valid payload. Result should be HTTP 200 OK with response: `{"status":"ignored","reason":"global_sync_disabled"}`.
+1. **Success (Simple Product):** Stock for product `123` changes to `42`. Response: `{"status":"success","reason":"stock_updated","new_stock":42}`.
+2. **Success (Variation):** If mapping is correctly set to a variation ID, the variation's stock changes to `42`. Response: `{"status":"success","reason":"stock_updated","new_stock":42}`.
+3. **Invalid Variation Mapping:** If variation mapping targets a simple product or mismatched parent, result should be HTTP 200 OK with `{"status":"error","reason":"invalid_variation_parent"}` (or similar error reason).
+4. **Invalid Signature:** Change `test_secret` or alter the JSON payload without recalculating the HMAC. Result should be HTTP 401 Unauthorized.
+5. **Unmapped Item:** Change `inventory_item_id` in the JSON to `0000`. Result should be HTTP 200 OK with response: `{"status":"ignored","reason":"unmapped_item"}`.
+6. **Global Kill Switch Enabled:** Enable the kill switch in settings and resend valid payload. Result should be HTTP 200 OK with response: `{"status":"ignored","reason":"global_sync_disabled"}`.
 
 ## 3. Acceptance Criteria (Phase 1)
 - [x] Webhook endpoint exists and is secure (verifies HMAC-SHA256).
 - [x] Settings page exists to configure secret and global disable.
-- [x] Mappings UI exists to explicitly link Shopify IDs to WC IDs.
+- [x] Mappings UI exists to explicitly link Shopify IDs (Product, Variant, Inventory Item) to WC IDs (Parent, Variation).
+- [x] Enforces strict validation for mapping variants to variations and simple products to simple products.
 - [x] Processing follows "Default Deny": Unmapped items are safely ignored (returns 200 to Shopify, logs event, does not update stock).
-- [x] Valid mapped payloads successfully update absolute stock quantities in WooCommerce.
+- [x] Valid mapped payloads successfully update absolute stock quantities in WooCommerce (including variation stock).
 - [x] All significant actions (success, failure, ignored) are logged to the WC Logger if logging is enabled.

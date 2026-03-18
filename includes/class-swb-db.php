@@ -25,14 +25,18 @@ class SWB_DB {
 
 		$sql = "CREATE TABLE $table_name (
 			id bigint(20) NOT NULL AUTO_INCREMENT,
+			shopify_product_id varchar(255) NOT NULL,
+			shopify_variant_id varchar(255) DEFAULT NULL,
 			shopify_item_id varchar(255) NOT NULL,
 			wc_product_id bigint(20) NOT NULL,
+			wc_variation_id bigint(20) DEFAULT NULL,
 			is_enabled tinyint(1) NOT NULL DEFAULT 1,
 			created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
 			updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
 			PRIMARY KEY  (id),
 			UNIQUE KEY shopify_item_id (shopify_item_id),
-			KEY wc_product_id (wc_product_id)
+			KEY wc_product_id (wc_product_id),
+			KEY wc_variation_id (wc_variation_id)
 		) $charset_collate;";
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -50,14 +54,17 @@ class SWB_DB {
 		$table_name = $wpdb->prefix . 'swb_mappings';
 
 		$defaults = array(
-			'shopify_item_id' => '',
-			'wc_product_id'   => 0,
-			'is_enabled'      => 1,
+			'shopify_product_id' => '',
+			'shopify_variant_id' => null,
+			'shopify_item_id'    => '',
+			'wc_product_id'      => 0,
+			'wc_variation_id'    => null,
+			'is_enabled'         => 1,
 		);
 
 		$parsed_args = wp_parse_args( $data, $defaults );
 
-		if ( empty( $parsed_args['shopify_item_id'] ) || empty( $parsed_args['wc_product_id'] ) ) {
+		if ( empty( $parsed_args['shopify_product_id'] ) || empty( $parsed_args['shopify_item_id'] ) || empty( $parsed_args['wc_product_id'] ) ) {
 			return false;
 		}
 
@@ -68,7 +75,7 @@ class SWB_DB {
 			return self::update_mapping( $existing, $parsed_args );
 		}
 
-		$format = array( '%s', '%d', '%d' );
+		$format = array( '%s', '%s', '%s', '%d', '%d', '%d' );
 
 		return $wpdb->insert( $table_name, $parsed_args, $format );
 	}
@@ -86,10 +93,19 @@ class SWB_DB {
 
 		// Determine formats based on provided data keys.
 		$formats = array();
+		if ( isset( $data['shopify_product_id'] ) ) {
+			$formats[] = '%s';
+		}
+		if ( array_key_exists( 'shopify_variant_id', $data ) ) {
+			$formats[] = '%s';
+		}
 		if ( isset( $data['shopify_item_id'] ) ) {
 			$formats[] = '%s';
 		}
 		if ( isset( $data['wc_product_id'] ) ) {
+			$formats[] = '%d';
+		}
+		if ( array_key_exists( 'wc_variation_id', $data ) ) {
 			$formats[] = '%d';
 		}
 		if ( isset( $data['is_enabled'] ) ) {

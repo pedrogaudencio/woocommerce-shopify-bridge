@@ -129,13 +129,34 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return string
 	 */
 	function column_wc_product_id( $item ) {
-		$product = wc_get_product( $item['wc_product_id'] );
+		$product_id = absint( $item['wc_product_id'] );
+		$variation_id = ! empty( $item['wc_variation_id'] ) ? absint( $item['wc_variation_id'] ) : 0;
+		$target_id = $variation_id > 0 ? $variation_id : $product_id;
+
+		$product = wc_get_product( $target_id );
 		if ( $product ) {
 			$title = $product->get_name();
-			$edit_url = get_edit_post_link( $item['wc_product_id'] );
-			return sprintf( '<a href="%s">%s (ID: %d)</a>', esc_url( $edit_url ), esc_html( $title ), absint( $item['wc_product_id'] ) );
+			$edit_url = get_edit_post_link( $target_id );
+			$type_label = $variation_id > 0 ? __( 'Variation', 'shopify-woo-bridge' ) : __( 'Product', 'shopify-woo-bridge' );
+			return sprintf( '<a href="%s">%s (ID: %d - %s)</a>', esc_url( $edit_url ), esc_html( $title ), $target_id, $type_label );
 		}
-		return esc_html( $item['wc_product_id'] ) . ' - ' . __( 'Product Not Found', 'shopify-woo-bridge' );
+		return esc_html( $target_id ) . ' - ' . __( 'Product/Variation Not Found', 'shopify-woo-bridge' );
+	}
+
+	/**
+	 * Render the shopify product/variant ID column.
+	 *
+	 * @param array $item
+	 * @return string
+	 */
+	function column_shopify_product_id( $item ) {
+		$product_id = esc_html( $item['shopify_product_id'] );
+		$variant_id = ! empty( $item['shopify_variant_id'] ) ? esc_html( $item['shopify_variant_id'] ) : '';
+		
+		if ( $variant_id ) {
+			return sprintf( '%s<br><small>Variant: %s</small>', $product_id, $variant_id );
+		}
+		return $product_id;
 	}
 
 	/**
@@ -145,11 +166,12 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 */
 	function get_columns() {
 		$columns = array(
-			'cb'              => '<input type="checkbox" />',
-			'shopify_item_id' => __( 'Shopify Item ID', 'shopify-woo-bridge' ),
-			'wc_product_id'   => __( 'WooCommerce Product/Variant', 'shopify-woo-bridge' ),
-			'is_enabled'      => __( 'Sync Enabled', 'shopify-woo-bridge' ),
-			'created_at'      => __( 'Mapped On', 'shopify-woo-bridge' ),
+			'cb'                 => '<input type="checkbox" />',
+			'shopify_item_id'    => __( 'Shopify Inventory ID', 'shopify-woo-bridge' ),
+			'shopify_product_id' => __( 'Shopify Product/Variant ID', 'shopify-woo-bridge' ),
+			'wc_product_id'      => __( 'WooCommerce Product/Variant', 'shopify-woo-bridge' ),
+			'is_enabled'         => __( 'Sync Enabled', 'shopify-woo-bridge' ),
+			'created_at'         => __( 'Mapped On', 'shopify-woo-bridge' ),
 		);
 
 		return $columns;
