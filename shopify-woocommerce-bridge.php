@@ -81,9 +81,7 @@ class Shopify_WooCommerce_Bridge {
 
 		// Admin classes.
 		if ( is_admin() ) {
-			require_once SWB_PLUGIN_DIR . 'includes/class-swb-admin-settings.php';
 			require_once SWB_PLUGIN_DIR . 'includes/admin/class-swb-admin-mappings.php';
-			new SWB_Admin_Mappings();
 		}
 
 		// REST API.
@@ -123,7 +121,9 @@ class Shopify_WooCommerce_Bridge {
 	 * @return array
 	 */
 	public function add_settings_page( $settings ) {
-		$settings[] = new SWB_Admin_Settings();
+		if ( class_exists( 'SWB_Admin_Settings' ) ) {
+			$settings[] = new SWB_Admin_Settings();
+		}
 		return $settings;
 	}
 
@@ -140,7 +140,27 @@ class Shopify_WooCommerce_Bridge {
 			return; // Don't proceed if WC is missing.
 		}
 
-		// Initialize the rest of the plugin functionality here.
+		if ( is_admin() ) {
+			// Ensure WooCommerce's base settings class is available before loading our settings page class.
+			if ( ! class_exists( 'WC_Settings_Page' ) && defined( 'WC_ABSPATH' ) ) {
+				$wc_settings_page_file = WC_ABSPATH . 'includes/admin/settings/class-wc-settings-page.php';
+				if ( file_exists( $wc_settings_page_file ) ) {
+					require_once $wc_settings_page_file;
+				}
+			}
+
+			if ( ! class_exists( 'WC_Settings_Page' ) ) {
+				SWB_Logger::warning( 'Shopify WooCommerce Bridge settings page not loaded: WC_Settings_Page class is unavailable.' );
+				add_action( 'admin_notices', array( $this, 'woocommerce_settings_class_missing_notice' ) );
+				return;
+			}
+
+			require_once SWB_PLUGIN_DIR . 'includes/class-swb-admin-settings.php';
+
+			if ( class_exists( 'SWB_Admin_Mappings' ) ) {
+				new SWB_Admin_Mappings();
+			}
+		}
 	}
 
 	/**
@@ -150,6 +170,17 @@ class Shopify_WooCommerce_Bridge {
 		?>
 		<div class="error">
 			<p><?php esc_html_e( 'Shopify WooCommerce Bridge requires WooCommerce to be installed and active.', 'shopify-woo-bridge' ); ?></p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Admin notice if WooCommerce settings base class is unavailable.
+	 */
+	public function woocommerce_settings_class_missing_notice() {
+		?>
+		<div class="error">
+			<p><?php esc_html_e( 'Shopify WooCommerce Bridge could not load its settings page because WooCommerce settings classes are unavailable.', 'shopify-woo-bridge' ); ?></p>
 		</div>
 		<?php
 	}
