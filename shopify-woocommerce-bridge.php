@@ -79,6 +79,8 @@ class Shopify_WooCommerce_Bridge {
 		// Admin classes.
 		if ( is_admin() ) {
 			require_once SWB_PLUGIN_DIR . 'includes/class-swb-admin-settings.php';
+			require_once SWB_PLUGIN_DIR . 'includes/admin/class-swb-admin-mappings.php';
+			new SWB_Admin_Mappings();
 		}
 
 		// REST API.
