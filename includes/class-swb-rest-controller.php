@@ -138,43 +138,30 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		}
 
 		if ( ! $mapping->is_enabled ) {
-			SWB_Logger::info( 'Webhook ignored: Mapping is disabled.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $mapping->wc_product_id ) );
+			SWB_Logger::info( 'Webhook ignored: Mapping is disabled.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $mapping->wc_sku ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'mapping_disabled' ) );
 		}
 
-		// 2. Retrieve WooCommerce Product
-		$wc_product_id = absint( $mapping->wc_product_id );
-		$product = wc_get_product( $wc_product_id );
+		// 2. Retrieve WooCommerce Product by SKU
+		$wc_sku = $mapping->wc_sku;
+		$product_id = wc_get_product_id_by_sku( $wc_sku );
 
-		if ( ! $product ) {
-			SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce parent product not found.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id ) );
-			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_product_not_found' ) );
+		if ( ! $product_id ) {
+			SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce SKU not found.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku ) );
+			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_sku_not_found' ) );
 		}
 
-		$target_product = $product;
-		$wc_variation_id = ! empty( $mapping->wc_variation_id ) ? absint( $mapping->wc_variation_id ) : 0;
+		$target_product = wc_get_product( $product_id );
 
-		if ( $wc_variation_id > 0 ) {
-			$variation = wc_get_product( $wc_variation_id );
-			
-			if ( ! $variation ) {
-				SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce variation not found.', array( 'shopify_item_id' => $shopify_item_id, 'wc_variation_id' => $wc_variation_id ) );
-				return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_variation_not_found' ) );
-			}
+		if ( ! $target_product ) {
+			SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce product could not be loaded.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku ) );
+			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_product_not_loaded' ) );
+		}
 
-			// Validate that the variation belongs to the mapped parent
-			if ( $variation->get_parent_id() !== $wc_product_id ) {
-				SWB_Logger::error( 'Webhook rejected: WooCommerce variation does not belong to mapped parent product.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id, 'wc_variation_id' => $wc_variation_id ) );
-				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'invalid_variation_parent' ) );
-			}
-
-			$target_product = $variation;
-		} else {
-			// If no variation mapped, ensure the parent product is actually simple
-			if ( $product->is_type( 'variable' ) ) {
-				SWB_Logger::error( 'Webhook rejected: Cannot update stock for variable product without a variation ID.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id ) );
-				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'variable_product_requires_variation' ) );
-			}
+		// Prevent updating parent variable products
+		if ( $target_product->is_type( 'variable' ) ) {
+			SWB_Logger::error( 'Webhook rejected: Target SKU belongs to a variable product parent. A specific variation SKU is required.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku ) );
+			return rest_ensure_response( array( 'status' => 'error', 'reason' => 'variable_product_requires_variation' ) );
 		}
 
 		// 3. Update Stock

@@ -28,15 +28,13 @@ class SWB_DB {
 			shopify_product_id varchar(255) NOT NULL,
 			shopify_variant_id varchar(255) DEFAULT NULL,
 			shopify_item_id varchar(255) NOT NULL,
-			wc_product_id bigint(20) NOT NULL,
-			wc_variation_id bigint(20) DEFAULT NULL,
+			wc_sku varchar(255) NOT NULL,
 			is_enabled tinyint(1) NOT NULL DEFAULT 1,
 			created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
 			updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,
 			PRIMARY KEY  (id),
 			UNIQUE KEY shopify_item_id (shopify_item_id),
-			KEY wc_product_id (wc_product_id),
-			KEY wc_variation_id (wc_variation_id)
+			KEY wc_sku (wc_sku)
 		) $charset_collate;";
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -46,7 +44,7 @@ class SWB_DB {
 	/**
 	 * Insert or update a mapping.
 	 *
-	 * @param array $data Mapping data (shopify_item_id, wc_product_id, is_enabled).
+	 * @param array $data Mapping data (shopify_item_id, wc_sku, is_enabled).
 	 * @return int|false The number of rows inserted/updated, or false on error.
 	 */
 	public static function insert_mapping( $data ) {
@@ -57,14 +55,13 @@ class SWB_DB {
 			'shopify_product_id' => '',
 			'shopify_variant_id' => null,
 			'shopify_item_id'    => '',
-			'wc_product_id'      => 0,
-			'wc_variation_id'    => null,
+			'wc_sku'             => '',
 			'is_enabled'         => 1,
 		);
 
 		$parsed_args = wp_parse_args( $data, $defaults );
 
-		if ( empty( $parsed_args['shopify_product_id'] ) || empty( $parsed_args['shopify_item_id'] ) || empty( $parsed_args['wc_product_id'] ) ) {
+		if ( empty( $parsed_args['shopify_product_id'] ) || empty( $parsed_args['shopify_item_id'] ) || empty( $parsed_args['wc_sku'] ) ) {
 			return false;
 		}
 
@@ -75,7 +72,7 @@ class SWB_DB {
 			return self::update_mapping( $existing, $parsed_args );
 		}
 
-		$format = array( '%s', '%s', '%s', '%d', '%d', '%d' );
+		$format = array( '%s', '%s', '%s', '%s', '%d' );
 
 		return $wpdb->insert( $table_name, $parsed_args, $format );
 	}
@@ -102,11 +99,8 @@ class SWB_DB {
 		if ( isset( $data['shopify_item_id'] ) ) {
 			$formats[] = '%s';
 		}
-		if ( isset( $data['wc_product_id'] ) ) {
-			$formats[] = '%d';
-		}
-		if ( array_key_exists( 'wc_variation_id', $data ) ) {
-			$formats[] = '%d';
+		if ( isset( $data['wc_sku'] ) ) {
+			$formats[] = '%s';
 		}
 		if ( isset( $data['is_enabled'] ) ) {
 			$formats[] = '%d';
@@ -152,16 +146,16 @@ class SWB_DB {
 	}
 
 	/**
-	 * Get a mapping by WooCommerce Product ID.
+	 * Get a mapping by WooCommerce SKU.
 	 *
-	 * @param int $wc_product_id The WooCommerce Product ID.
+	 * @param string $wc_sku The WooCommerce SKU.
 	 * @return object|null Mapping row object or null if not found.
 	 */
-	public static function get_mapping_by_wc_product_id( $wc_product_id ) {
+	public static function get_mapping_by_wc_sku( $wc_sku ) {
 		global $wpdb;
 		$table_name = $wpdb->prefix . 'swb_mappings';
 
-		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM $table_name WHERE wc_product_id = %d LIMIT 1", $wc_product_id ) );
+		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM $table_name WHERE wc_sku = %s LIMIT 1", $wc_sku ) );
 	}
 
 	/**
