@@ -76,6 +76,9 @@ class Shopify_WooCommerce_Bridge {
 		// Database class.
 		require_once SWB_PLUGIN_DIR . 'includes/class-swb-db.php';
 
+		// Logger class.
+		require_once SWB_PLUGIN_DIR . 'includes/class-swb-logger.php';
+
 		// Admin classes.
 		if ( is_admin() ) {
 			require_once SWB_PLUGIN_DIR . 'includes/class-swb-admin-settings.php';

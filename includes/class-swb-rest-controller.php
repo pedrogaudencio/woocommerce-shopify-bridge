@@ -64,6 +64,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		// 2. Retrieve the stored secret.
 		$secret = get_option( 'swb_webhook_secret', '' );
 		if ( empty( $secret ) ) {
+			SWB_Logger::error( 'Webhook rejected: Shopify webhook secret is not configured.' );
 			return new WP_Error(
 				'swb_missing_secret',
 				__( 'Shopify webhook secret is not configured.', 'shopify-woo-bridge' ),
@@ -74,6 +75,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		// 3. Get the header signature.
 		$hmac_header = $request->get_header( 'x_shopify_hmac_sha256' );
 		if ( empty( $hmac_header ) ) {
+			SWB_Logger::warning( 'Webhook rejected: Missing X-Shopify-Hmac-Sha256 header.' );
 			return new WP_Error(
 				'swb_missing_signature',
 				__( 'Missing X-Shopify-Hmac-Sha256 header.', 'shopify-woo-bridge' ),
@@ -87,6 +89,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 
 		// 5. Compare using timing-safe string comparison.
 		if ( ! hash_equals( $calculated_hmac, $hmac_header ) ) {
+			SWB_Logger::error( 'Webhook rejected: Invalid signature.' );
 			return new WP_Error(
 				'swb_invalid_signature',
 				__( 'Invalid signature.', 'shopify-woo-bridge' ),
@@ -106,7 +109,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 	public function process_webhook( $request ) {
 		// Check global enable again. If disabled, log and exit.
 		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
-			// Log here (later task)
+			SWB_Logger::info( 'Webhook ignored: Global sync is disabled via kill switch.' );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'global_sync_disabled' ) );
 		}
 
@@ -115,6 +118,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		// Ensure we have the necessary data from Shopify payload
 		// Shopify inventory_levels/update webhook sends 'inventory_item_id' and 'available'
 		if ( empty( $payload['inventory_item_id'] ) || ! isset( $payload['available'] ) ) {
+			SWB_Logger::warning( 'Webhook ignored: Invalid payload missing inventory_item_id or available quantity.' );
 			return new WP_Error(
 				'swb_invalid_payload',
 				__( 'Invalid payload. Missing inventory_item_id or available quantity.', 'shopify-woo-bridge' ),
@@ -129,10 +133,12 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		$mapping = SWB_DB::get_mapping_by_shopify_id( $shopify_item_id );
 
 		if ( ! $mapping ) {
+			SWB_Logger::info( 'Webhook ignored: Item is not mapped.', array( 'shopify_item_id' => $shopify_item_id ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'unmapped_item' ) );
 		}
 
 		if ( ! $mapping->is_enabled ) {
+			SWB_Logger::info( 'Webhook ignored: Mapping is disabled.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $mapping->wc_product_id ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'mapping_disabled' ) );
 		}
 
@@ -141,13 +147,13 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		$product = wc_get_product( $wc_product_id );
 
 		if ( ! $product ) {
+			SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce product not found.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_product_not_found' ) );
 		}
 
 		// 3. Update Stock
 		if ( ! $product->managing_stock() ) {
-			// Product is not managing stock in Woo, we shouldn't force update it blindly,
-			// or we should optionally turn it on. For safety, we will ignore if it's not set to manage stock.
+			SWB_Logger::info( 'Webhook ignored: WooCommerce product is not managing stock.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'product_not_managing_stock' ) );
 		}
 
@@ -158,14 +164,15 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			$result = wc_update_product_stock( $product, $new_quantity, 'set' );
 
 			if ( is_wp_error( $result ) ) {
-				// We return 200 to Shopify even on error so they don't retry unnecessarily if it's a Woo issue
+				SWB_Logger::error( 'Stock update failed.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id, 'error' => $result->get_error_message() ) );
 				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'stock_update_failed' ) );
 			}
 			
+			SWB_Logger::info( 'Stock updated successfully.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id, 'old_stock' => $current_stock, 'new_stock' => $new_quantity ) );
 			return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_updated', 'new_stock' => $new_quantity ) );
 		}
 
-		// Stock was already the same, no update needed.
+		SWB_Logger::info( 'Stock update skipped: Quantity is already correct.', array( 'shopify_item_id' => $shopify_item_id, 'wc_product_id' => $wc_product_id, 'stock' => $current_stock ) );
 		return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_unchanged', 'new_stock' => $new_quantity ) );
 	}
 }
