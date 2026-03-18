@@ -95,7 +95,7 @@ class Shopify_WooCommerce_Bridge {
 	 */
 	private function init_hooks() {
 		add_action( 'plugins_loaded', array( $this, 'on_plugins_loaded' ) );
-		
+
 		register_activation_hook( __FILE__, array( 'Shopify_WooCommerce_Bridge', 'activate' ) );
 		register_deactivation_hook( __FILE__, array( 'Shopify_WooCommerce_Bridge', 'deactivate' ) );
 
@@ -115,6 +115,9 @@ class Shopify_WooCommerce_Bridge {
 		$controller = new SWB_REST_Controller();
 		$controller->register_routes();
 	}
+
+	/**
+	 * Add settings page.
 	 *
 	 * @param array $settings WC settings pages.
 	 * @return array
@@ -136,7 +139,7 @@ class Shopify_WooCommerce_Bridge {
 			add_action( 'admin_notices', array( $this, 'woocommerce_missing_notice' ) );
 			return; // Don't proceed if WC is missing.
 		}
-		
+
 		// Initialize the rest of the plugin functionality here.
 	}
 
