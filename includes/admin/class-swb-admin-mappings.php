@@ -84,19 +84,9 @@ class SWB_Admin_Mappings {
 											<span class="description"><?php esc_html_e( 'The ID of the inventory item in Shopify (used by webhooks).', 'shopify-woo-bridge' ); ?></span>
 										</p>
 										<p>
-											<label for="mapping_assistance_sku"><strong><?php esc_html_e( 'Assistance: SKU / EAN (Optional)', 'shopify-woo-bridge' ); ?></strong></label><br/>
-											<input type="text" name="mapping_assistance_sku" id="mapping_assistance_sku" class="widefat" placeholder="e.g. 1234567890123" />
-											<span class="description"><?php esc_html_e( 'Optional helper field for operators to reference the SKU or EAN. This does not replace explicit ID mapping.', 'shopify-woo-bridge' ); ?></span>
-										</p>
-										<p>
-											<label for="wc_product_id"><strong><?php esc_html_e( 'WooCommerce Parent Product ID', 'shopify-woo-bridge' ); ?></strong></label><br/>
-											<input type="number" name="wc_product_id" id="wc_product_id" class="widefat" required />
-											<span class="description"><?php esc_html_e( 'The ID of the parent product in WooCommerce.', 'shopify-woo-bridge' ); ?></span>
-										</p>
-										<p>
-											<label for="wc_variation_id"><strong><?php esc_html_e( 'WooCommerce Variation ID', 'shopify-woo-bridge' ); ?></strong></label><br/>
-											<input type="number" name="wc_variation_id" id="wc_variation_id" class="widefat" />
-											<span class="description"><?php esc_html_e( 'The ID of the specific variation in WooCommerce (leave blank for simple products).', 'shopify-woo-bridge' ); ?></span>
+											<label for="wc_sku"><strong><?php esc_html_e( 'WooCommerce SKU', 'shopify-woo-bridge' ); ?></strong></label><br/>
+											<input type="text" name="wc_sku" id="wc_sku" class="widefat" required />
+											<span class="description"><?php esc_html_e( 'The SKU of the product or variation in WooCommerce.', 'shopify-woo-bridge' ); ?></span>
 										</p>
 										<p>
 											<label for="is_enabled">
@@ -136,63 +126,48 @@ class SWB_Admin_Mappings {
 		$shopify_product_id = isset( $_POST['shopify_product_id'] ) ? sanitize_text_field( wp_unslash( $_POST['shopify_product_id'] ) ) : '';
 		$shopify_variant_id = isset( $_POST['shopify_variant_id'] ) ? sanitize_text_field( wp_unslash( $_POST['shopify_variant_id'] ) ) : '';
 		$shopify_item_id    = isset( $_POST['shopify_item_id'] ) ? sanitize_text_field( wp_unslash( $_POST['shopify_item_id'] ) ) : '';
-		$wc_product_id      = isset( $_POST['wc_product_id'] ) ? absint( wp_unslash( $_POST['wc_product_id'] ) ) : 0;
-		$wc_variation_id    = ! empty( $_POST['wc_variation_id'] ) ? absint( wp_unslash( $_POST['wc_variation_id'] ) ) : null;
+		$wc_sku             = isset( $_POST['wc_sku'] ) ? sanitize_text_field( wp_unslash( $_POST['wc_sku'] ) ) : '';
 		$is_enabled         = isset( $_POST['is_enabled'] ) ? 1 : 0;
 
-		if ( empty( $shopify_product_id ) || empty( $shopify_item_id ) || empty( $wc_product_id ) ) {
+		if ( empty( $shopify_product_id ) || empty( $shopify_item_id ) || empty( $wc_sku ) ) {
 			add_action( 'admin_notices', array( $this, 'notice_error_missing_fields' ) );
 			return;
 		}
 
-		// Verify product exists.
-		$product = wc_get_product( $wc_product_id );
-		if ( ! $product ) {
+		global $wpdb;
+		$product_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"
+				SELECT posts.ID
+				FROM {$wpdb->posts} as posts
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS lookup ON posts.ID = lookup.product_id
+				WHERE
+				posts.post_type IN ( 'product', 'product_variation' )
+				AND posts.post_status != 'trash'
+				AND lookup.sku = %s
+				",
+				$wc_sku
+			)
+		);
+
+		if ( empty( $product_ids ) ) {
 			add_action( 'admin_notices', array( $this, 'notice_error_invalid_product' ) );
 			return;
 		}
 
-		// Validation rules:
-		// 1. If variation ID is provided, parent product must be a variable product, and variation must belong to it.
-		// 2. If variation ID is provided, Shopify variant ID MUST be provided.
-		// 3. If variation ID is NOT provided, Shopify variant ID MUST NOT be provided, and product must be a simple product.
-		
-		if ( ! empty( $wc_variation_id ) ) {
-			if ( ! $product->is_type( 'variable' ) ) {
-				add_action( 'admin_notices', function() {
-					echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'WooCommerce product is not a variable product, but a variation ID was provided.', 'shopify-woo-bridge' ) . '</p></div>';
-				} );
-				return;
-			}
+		if ( count( $product_ids ) > 1 ) {
+			add_action( 'admin_notices', function() {
+				echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Multiple WooCommerce products found with this SKU. Please ensure SKUs are unique.', 'shopify-woo-bridge' ) . '</p></div>';
+			} );
+			return;
+		}
 
-			$variation = wc_get_product( $wc_variation_id );
-			if ( ! $variation || ! $variation->is_type( 'variation' ) || $variation->get_parent_id() !== $wc_product_id ) {
-				add_action( 'admin_notices', function() {
-					echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Invalid WooCommerce Variation ID or variation does not belong to the specified parent product.', 'shopify-woo-bridge' ) . '</p></div>';
-				} );
-				return;
-			}
-
-			if ( empty( $shopify_variant_id ) ) {
-				add_action( 'admin_notices', function() {
-					echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Shopify Variant ID is required when mapping to a WooCommerce Variation.', 'shopify-woo-bridge' ) . '</p></div>';
-				} );
-				return;
-			}
-		} else {
-			if ( $product->is_type( 'variable' ) ) {
-				add_action( 'admin_notices', function() {
-					echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'WooCommerce product is a variable product. Please provide a WooCommerce Variation ID and Shopify Variant ID.', 'shopify-woo-bridge' ) . '</p></div>';
-				} );
-				return;
-			}
-
-			if ( ! empty( $shopify_variant_id ) ) {
-				add_action( 'admin_notices', function() {
-					echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Shopify Variant ID must be blank when mapping to a simple WooCommerce product.', 'shopify-woo-bridge' ) . '</p></div>';
-				} );
-				return;
-			}
+		$product = wc_get_product( $product_ids[0] );
+		if ( $product && $product->is_type( 'variable' ) ) {
+			add_action( 'admin_notices', function() {
+				echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Target SKU belongs to a variable product parent. Please provide a variation SKU.', 'shopify-woo-bridge' ) . '</p></div>';
+			} );
+			return;
 		}
 
 		$result = SWB_DB::insert_mapping(
@@ -200,8 +175,7 @@ class SWB_Admin_Mappings {
 				'shopify_product_id' => $shopify_product_id,
 				'shopify_variant_id' => empty( $shopify_variant_id ) ? null : $shopify_variant_id,
 				'shopify_item_id'    => $shopify_item_id,
-				'wc_product_id'      => $wc_product_id,
-				'wc_variation_id'    => $wc_variation_id,
+				'wc_sku'             => $wc_sku,
 				'is_enabled'         => $is_enabled,
 			)
 		);
@@ -214,11 +188,11 @@ class SWB_Admin_Mappings {
 	}
 
 	public function notice_error_missing_fields() {
-		echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Please provide both Shopify ID and WooCommerce ID.', 'shopify-woo-bridge' ) . '</p></div>';
+		echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Please provide both Shopify ID and WooCommerce SKU.', 'shopify-woo-bridge' ) . '</p></div>';
 	}
 
 	public function notice_error_invalid_product() {
-		echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Invalid WooCommerce Product ID.', 'shopify-woo-bridge' ) . '</p></div>';
+		echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Invalid WooCommerce SKU (product not found).', 'shopify-woo-bridge' ) . '</p></div>';
 	}
 
 	public function notice_success() {

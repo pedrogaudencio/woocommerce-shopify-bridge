@@ -19,12 +19,10 @@ This plugin provides a secure, one-way stock synchronization from Shopify to Woo
 3. **Shopify Product ID:** Enter the ID of the parent product in Shopify.
 4. **Shopify Variant ID:** Enter the variant ID if applicable (leave blank for simple products).
 5. **Shopify Inventory Item ID:** Enter the `inventory_item_id` (this is the ID sent in Shopify webhooks).
-6. **Assistance: SKU / EAN (Optional):** Enter a SKU/EAN for your own reference. This is not used for logic but helps operators identify mappings.
-7. **WooCommerce Parent Product ID:** Enter the ID of the parent product in WooCommerce.
-8. **WooCommerce Variation ID:** Enter the variation ID if applicable (leave blank for simple products).
-9. Check **Enable Sync** and click **Add Mapping**.
+6. **WooCommerce SKU:** Enter the exact SKU of the product or variation in WooCommerce.
+7. Check **Enable Sync** and click **Add Mapping**.
 
-*Note: The plugin enforces strict validation. You cannot map a Shopify variant to a WooCommerce simple product, or a simple Shopify product to a WooCommerce variation.*
+*Note: The plugin enforces strict validation. You cannot map an SKU belonging to a variable product parent.*
 
 ### Shopify Webhook Configuration
 1. In your Shopify Admin, go to **Settings > Notifications**.
@@ -44,8 +42,8 @@ This plugin provides a secure, one-way stock synchronization from Shopify to Woo
 You can simulate Shopify webhooks using `curl` or Postman.
 
 ### Prerequisites for testing:
-1. Have a WooCommerce product set to manage stock. Let's say its ID is `123`.
-2. Create a mapping in the plugin: Shopify Item ID `999888777` maps to WC Product ID `123`.
+1. Have a WooCommerce product set to manage stock. Let's say its SKU is `TEST-SKU-123`.
+2. Create a mapping in the plugin: Shopify Item ID `999888777` maps to WC SKU `TEST-SKU-123`.
 3. Set your webhook secret in WooCommerce settings to `test_secret`.
 
 ### Generating a Test Payload & Signature
@@ -75,9 +73,9 @@ curl -X POST https://your-site.com/wp-json/shopify-bridge/v1/webhook/inventory \
 ```
 
 ### Expected Results:
-1. **Success (Simple Product):** Stock for product `123` changes to `42`. Response: `{"status":"success","reason":"stock_updated","new_stock":42}`.
-2. **Success (Variation):** If mapping is correctly set to a variation ID, the variation's stock changes to `42`. Response: `{"status":"success","reason":"stock_updated","new_stock":42}`.
-3. **Invalid Variation Mapping:** If variation mapping targets a simple product or mismatched parent, result should be HTTP 200 OK with `{"status":"error","reason":"invalid_variation_parent"}` (or similar error reason).
+1. **Success (Simple Product/Variation):** Stock for product with SKU `TEST-SKU-123` changes to `42`. Response: `{"status":"success","reason":"stock_updated","new_stock":42}`.
+2. **Invalid Variable Product Target:** If the SKU mapped belongs to a variable product parent (which cannot hold stock directly), result should be HTTP 200 OK with `{"status":"error","reason":"variable_product_requires_variation"}`.
+3. **Duplicate SKUs:** If the mapped SKU exists on multiple products in WooCommerce, result should be HTTP 200 OK with `{"status":"error","reason":"duplicate_wc_sku"}`.
 4. **Invalid Signature:** Change `test_secret` or alter the JSON payload without recalculating the HMAC. Result should be HTTP 401 Unauthorized.
 5. **Unmapped Item:** Change `inventory_item_id` in the JSON to `0000`. Result should be HTTP 200 OK with response: `{"status":"ignored","reason":"unmapped_item"}`.
 6. **Global Kill Switch Enabled:** Enable the kill switch in settings and resend valid payload. Result should be HTTP 200 OK with response: `{"status":"ignored","reason":"global_sync_disabled"}`.
@@ -85,8 +83,8 @@ curl -X POST https://your-site.com/wp-json/shopify-bridge/v1/webhook/inventory \
 ## 3. Acceptance Criteria (Phase 1)
 - [x] Webhook endpoint exists and is secure (verifies HMAC-SHA256).
 - [x] Settings page exists to configure secret and global disable.
-- [x] Mappings UI exists to explicitly link Shopify IDs (Product, Variant, Inventory Item) to WC IDs (Parent, Variation).
-- [x] Enforces strict validation for mapping variants to variations and simple products to simple products.
+- [x] Mappings UI exists to explicitly link Shopify Inventory Items to WC SKUs.
+- [x] Enforces strict validation preventing mapping to variable product parents or handling duplicate SKUs.
 - [x] Processing follows "Default Deny": Unmapped items are safely ignored (returns 200 to Shopify, logs event, does not update stock).
-- [x] Valid mapped payloads successfully update absolute stock quantities in WooCommerce (including variation stock).
+- [x] Valid mapped payloads successfully update absolute stock quantities in WooCommerce (including variation stock via SKU).
 - [x] All significant actions (success, failure, ignored) are logged to the WC Logger if logging is enabled.

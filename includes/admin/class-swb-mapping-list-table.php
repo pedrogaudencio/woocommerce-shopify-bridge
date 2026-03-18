@@ -65,7 +65,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	public function column_default( $item, $column_name ) {
 		switch ( $column_name ) {
 			case 'shopify_item_id':
-			case 'wc_product_id':
+			case 'wc_sku':
 			case 'created_at':
 				return esc_html( $item[ $column_name ] );
 			case 'is_enabled':
@@ -123,24 +123,49 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	}
 
 	/**
-	 * Render the wc_product_id column with edit link.
+	 * Render the wc_sku column with edit link.
 	 *
 	 * @param array $item
 	 * @return string
 	 */
-	function column_wc_product_id( $item ) {
-		$product_id = absint( $item['wc_product_id'] );
-		$variation_id = ! empty( $item['wc_variation_id'] ) ? absint( $item['wc_variation_id'] ) : 0;
-		$target_id = $variation_id > 0 ? $variation_id : $product_id;
+	function column_wc_sku( $item ) {
+		$wc_sku = esc_html( $item['wc_sku'] );
+		
+		global $wpdb;
+		$product_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"
+				SELECT posts.ID
+				FROM {$wpdb->posts} as posts
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS lookup ON posts.ID = lookup.product_id
+				WHERE
+				posts.post_type IN ( 'product', 'product_variation' )
+				AND posts.post_status != 'trash'
+				AND lookup.sku = %s
+				",
+				$item['wc_sku']
+			)
+		);
 
-		$product = wc_get_product( $target_id );
+		if ( empty( $product_ids ) ) {
+			return $wc_sku . ' - ' . __( 'Product Not Found', 'shopify-woo-bridge' );
+		}
+
+		if ( count( $product_ids ) > 1 ) {
+			return '<span style="color:red;">' . $wc_sku . ' - ' . __( 'Error: Duplicate SKUs Found', 'shopify-woo-bridge' ) . '</span>';
+		}
+
+		$product_id = $product_ids[0];
+		$product = wc_get_product( $product_id );
+		
 		if ( $product ) {
 			$title = $product->get_name();
-			$edit_url = get_edit_post_link( $target_id );
-			$type_label = $variation_id > 0 ? __( 'Variation', 'shopify-woo-bridge' ) : __( 'Product', 'shopify-woo-bridge' );
-			return sprintf( '<a href="%s">%s (ID: %d - %s)</a>', esc_url( $edit_url ), esc_html( $title ), $target_id, $type_label );
+			$edit_url = get_edit_post_link( $product_id );
+			$type_label = $product->is_type('variation') ? __( 'Variation', 'shopify-woo-bridge' ) : __( 'Product', 'shopify-woo-bridge' );
+			return sprintf( '<strong>%s</strong><br><a href="%s">%s (ID: %d - %s)</a>', $wc_sku, esc_url( $edit_url ), esc_html( $title ), $product_id, $type_label );
 		}
-		return esc_html( $target_id ) . ' - ' . __( 'Product/Variation Not Found', 'shopify-woo-bridge' );
+		
+		return $wc_sku . ' - ' . __( 'Product Not Found', 'shopify-woo-bridge' );
 	}
 
 	/**
@@ -169,7 +194,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			'cb'                 => '<input type="checkbox" />',
 			'shopify_item_id'    => __( 'Shopify Inventory ID', 'shopify-woo-bridge' ),
 			'shopify_product_id' => __( 'Shopify Product/Variant ID', 'shopify-woo-bridge' ),
-			'wc_product_id'      => __( 'WooCommerce Product/Variant', 'shopify-woo-bridge' ),
+			'wc_sku'             => __( 'WooCommerce SKU', 'shopify-woo-bridge' ),
 			'is_enabled'         => __( 'Sync Enabled', 'shopify-woo-bridge' ),
 			'created_at'         => __( 'Mapped On', 'shopify-woo-bridge' ),
 		);

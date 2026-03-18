@@ -188,7 +188,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 
 		// 3. Update Stock
 		if ( ! $target_product->managing_stock() ) {
-			SWB_Logger::info( 'Webhook ignored: WooCommerce product/variation is not managing stock.', array( 'shopify_item_id' => $shopify_item_id, 'wc_target_id' => $target_product->get_id() ) );
+			SWB_Logger::info( 'Webhook ignored: WooCommerce product/variation is not managing stock.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id() ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'product_not_managing_stock' ) );
 		}
 
@@ -199,15 +199,15 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			$result = wc_update_product_stock( $target_product, $new_quantity, 'set' );
 
 			if ( is_wp_error( $result ) ) {
-				SWB_Logger::error( 'Stock update failed.', array( 'shopify_item_id' => $shopify_item_id, 'wc_target_id' => $target_product->get_id(), 'error' => $result->get_error_message() ) );
+				SWB_Logger::error( 'Stock update failed.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id(), 'error' => $result->get_error_message() ) );
 				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'stock_update_failed' ) );
 			}
 			
-			SWB_Logger::info( 'Stock updated successfully.', array( 'shopify_item_id' => $shopify_item_id, 'wc_target_id' => $target_product->get_id(), 'old_stock' => $current_stock, 'new_stock' => $new_quantity ) );
+			SWB_Logger::info( 'Stock updated successfully.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id(), 'old_stock' => $current_stock, 'new_stock' => $new_quantity ) );
 			return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_updated', 'new_stock' => $new_quantity ) );
 		}
 
-		SWB_Logger::info( 'Stock update skipped: Quantity is already correct.', array( 'shopify_item_id' => $shopify_item_id, 'wc_target_id' => $target_product->get_id(), 'stock' => $current_stock ) );
+		SWB_Logger::info( 'Stock update skipped: Quantity is already correct.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id(), 'stock' => $current_stock ) );
 		return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_unchanged', 'new_stock' => $new_quantity ) );
 	}
 }
