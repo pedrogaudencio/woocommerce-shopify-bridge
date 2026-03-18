@@ -144,13 +144,35 @@ class SWB_REST_Controller extends WP_REST_Controller {
 
 		// 2. Retrieve WooCommerce Product by SKU
 		$wc_sku = $mapping->wc_sku;
-		$product_id = wc_get_product_id_by_sku( $wc_sku );
+		
+		// Check for duplicate SKUs in WooCommerce to prevent ambiguous updates
+		global $wpdb;
+		$product_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"
+				SELECT posts.ID
+				FROM {$wpdb->posts} as posts
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS lookup ON posts.ID = lookup.product_id
+				WHERE
+				posts.post_type IN ( 'product', 'product_variation' )
+				AND posts.post_status != 'trash'
+				AND lookup.sku = %s
+				",
+				$wc_sku
+			)
+		);
 
-		if ( ! $product_id ) {
+		if ( empty( $product_ids ) ) {
 			SWB_Logger::warning( 'Webhook ignored: Mapped WooCommerce SKU not found.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku ) );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_sku_not_found' ) );
 		}
 
+		if ( count( $product_ids ) > 1 ) {
+			SWB_Logger::error( 'Webhook rejected: Multiple products found with the same SKU. Cannot safely update stock.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'matching_ids' => $product_ids ) );
+			return rest_ensure_response( array( 'status' => 'error', 'reason' => 'duplicate_wc_sku' ) );
+		}
+
+		$product_id = $product_ids[0];
 		$target_product = wc_get_product( $product_id );
 
 		if ( ! $target_product ) {
