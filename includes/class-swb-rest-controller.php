@@ -110,8 +110,62 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'global_sync_disabled' ) );
 		}
 
-		// We will implement mapping logic and stock updates here in subsequent tasks.
+		$payload = $request->get_json_params();
 
-		return rest_ensure_response( array( 'status' => 'success', 'message' => 'Webhook verified.' ) );
+		// Ensure we have the necessary data from Shopify payload
+		// Shopify inventory_levels/update webhook sends 'inventory_item_id' and 'available'
+		if ( empty( $payload['inventory_item_id'] ) || ! isset( $payload['available'] ) ) {
+			return new WP_Error(
+				'swb_invalid_payload',
+				__( 'Invalid payload. Missing inventory_item_id or available quantity.', 'shopify-woo-bridge' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$shopify_item_id = strval( $payload['inventory_item_id'] );
+		$new_quantity    = intval( $payload['available'] );
+
+		// 1. Lookup Mapping (Default Deny)
+		$mapping = SWB_DB::get_mapping_by_shopify_id( $shopify_item_id );
+
+		if ( ! $mapping ) {
+			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'unmapped_item' ) );
+		}
+
+		if ( ! $mapping->is_enabled ) {
+			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'mapping_disabled' ) );
+		}
+
+		// 2. Retrieve WooCommerce Product
+		$wc_product_id = absint( $mapping->wc_product_id );
+		$product = wc_get_product( $wc_product_id );
+
+		if ( ! $product ) {
+			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'wc_product_not_found' ) );
+		}
+
+		// 3. Update Stock
+		if ( ! $product->managing_stock() ) {
+			// Product is not managing stock in Woo, we shouldn't force update it blindly,
+			// or we should optionally turn it on. For safety, we will ignore if it's not set to manage stock.
+			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'product_not_managing_stock' ) );
+		}
+
+		$current_stock = $product->get_stock_quantity();
+		
+		if ( $current_stock !== $new_quantity ) {
+			// wc_update_product_stock handles the update securely and fires necessary hooks.
+			$result = wc_update_product_stock( $product, $new_quantity, 'set' );
+
+			if ( is_wp_error( $result ) ) {
+				// We return 200 to Shopify even on error so they don't retry unnecessarily if it's a Woo issue
+				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'stock_update_failed' ) );
+			}
+			
+			return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_updated', 'new_stock' => $new_quantity ) );
+		}
+
+		// Stock was already the same, no update needed.
+		return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_unchanged', 'new_stock' => $new_quantity ) );
 	}
 }
