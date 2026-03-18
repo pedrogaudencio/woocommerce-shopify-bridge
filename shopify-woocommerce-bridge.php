@@ -73,6 +73,9 @@ class Shopify_WooCommerce_Bridge {
 	 * Include required core files.
 	 */
 	private function includes() {
+		// Database class.
+		require_once SWB_PLUGIN_DIR . 'includes/class-swb-db.php';
+
 		// Admin classes.
 		if ( is_admin() ) {
 			require_once SWB_PLUGIN_DIR . 'includes/class-swb-admin-settings.php';
@@ -151,6 +154,10 @@ class Shopify_WooCommerce_Bridge {
 		if ( false === get_option( 'swb_global_enable' ) ) {
 			add_option( 'swb_global_enable', 'no' ); // Default deny/disabled
 		}
+
+		// Create database tables.
+		require_once SWB_PLUGIN_DIR . 'includes/class-swb-db.php';
+		SWB_DB::create_tables();
 	}
 
 	/**
