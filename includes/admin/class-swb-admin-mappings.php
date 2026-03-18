@@ -41,10 +41,11 @@ class SWB_Admin_Mappings {
 	 */
 	public function create_admin_page() {
 		require_once SWB_PLUGIN_DIR . 'includes/admin/class-swb-mapping-list-table.php';
-		
+
 		$mapping_table = new SWB_Mapping_List_Table();
 		$mapping_table->prepare_items();
-		
+		$page_slug = isset( $_REQUEST['page'] ) ? sanitize_key( $_REQUEST['page'] ) : 'shopify-bridge-mappings';
+
 		?>
 		<div class="wrap">
 			<h1 class="wp-heading-inline"><?php esc_html_e( 'Shopify Mappings', 'shopify-woo-bridge' ); ?></h1>
@@ -56,6 +57,8 @@ class SWB_Admin_Mappings {
 						<div class="meta-box-sortables ui-sortable">
 							<form method="post">
 								<?php
+								echo '<input type="hidden" name="page" value="' . esc_attr( $page_slug ) . '" />';
+								$mapping_table->search_box( __( 'Search Shopify Item ID', 'shopify-woo-bridge' ), 'swb-mappings' );
 								$mapping_table->display();
 								?>
 							</form>

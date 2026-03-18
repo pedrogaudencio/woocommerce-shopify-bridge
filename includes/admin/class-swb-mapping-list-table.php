@@ -19,6 +19,26 @@ if ( ! class_exists( 'WP_List_Table' ) ) {
 class SWB_Mapping_List_Table extends WP_List_Table {
 
 	/**
+	 * Read a mapping field regardless of row data shape.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @param string       $key  Field name.
+	 * @param mixed        $default Default value.
+	 * @return mixed
+	 */
+	private function get_item_value( $item, $key, $default = '' ) {
+		if ( is_array( $item ) && array_key_exists( $key, $item ) ) {
+			return $item[ $key ];
+		}
+
+		if ( is_object( $item ) && isset( $item->{$key} ) ) {
+			return $item->{$key};
+		}
+
+		return $default;
+	}
+
+	/**
 	 * Constructor.
 	 */
 	public function __construct() {
@@ -67,9 +87,9 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			case 'shopify_item_id':
 			case 'wc_sku':
 			case 'created_at':
-				return esc_html( $item[ $column_name ] );
+				return esc_html( $this->get_item_value( $item, $column_name ) );
 			case 'is_enabled':
-				return $item[ $column_name ] ? __( 'Yes', 'shopify-woo-bridge' ) : __( 'No', 'shopify-woo-bridge' );
+				return (int) $this->get_item_value( $item, $column_name, 0 ) ? __( 'Yes', 'shopify-woo-bridge' ) : __( 'No', 'shopify-woo-bridge' );
 			default:
 				return print_r( $item, true ); // Show the whole array for troubleshooting purposes
 		}
@@ -84,7 +104,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	function column_cb( $item ) {
 		return sprintf(
 			'<input type="checkbox" name="bulk-delete[]" value="%s" />',
-			$item['id']
+			absint( $this->get_item_value( $item, 'id', 0 ) )
 		);
 	}
 
@@ -95,25 +115,28 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return string
 	 */
 	function column_shopify_item_id( $item ) {
-		$toggle_nonce = wp_create_nonce( 'swb_toggle_mapping_' . $item['id'] );
-		$delete_nonce = wp_create_nonce( 'swb_delete_mapping_' . $item['id'] );
+		$id = absint( $this->get_item_value( $item, 'id', 0 ) );
+		$toggle_nonce = wp_create_nonce( 'swb_toggle_mapping_' . $id );
+		$delete_nonce = wp_create_nonce( 'swb_delete_mapping_' . $id );
 
-		$title = '<strong>' . esc_html( $item['shopify_item_id'] ) . '</strong>';
+		$title = '<strong>' . esc_html( $this->get_item_value( $item, 'shopify_item_id' ) ) . '</strong>';
+		$page  = isset( $_REQUEST['page'] ) ? sanitize_key( $_REQUEST['page'] ) : 'shopify-bridge-mappings';
+		$is_enabled = (int) $this->get_item_value( $item, 'is_enabled', 0 );
 
 		$actions = array(
 			'toggle' => sprintf(
 				'<a href="?page=%s&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
-				esc_attr( $_REQUEST['page'] ),
+				esc_attr( $page ),
 				'toggle',
-				absint( $item['id'] ),
+				$id,
 				$toggle_nonce,
-				$item['is_enabled'] ? __( 'Disable', 'shopify-woo-bridge' ) : __( 'Enable', 'shopify-woo-bridge' )
+				$is_enabled ? __( 'Disable', 'shopify-woo-bridge' ) : __( 'Enable', 'shopify-woo-bridge' )
 			),
 			'delete' => sprintf(
 				'<a href="?page=%s&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
-				esc_attr( $_REQUEST['page'] ),
+				esc_attr( $page ),
 				'delete',
-				absint( $item['id'] ),
+				$id,
 				$delete_nonce,
 				__( 'Delete', 'shopify-woo-bridge' )
 			),
@@ -129,8 +152,9 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return string
 	 */
 	function column_wc_sku( $item ) {
-		$wc_sku = esc_html( $item['wc_sku'] );
-		
+		$wc_sku_raw = (string) $this->get_item_value( $item, 'wc_sku' );
+		$wc_sku = esc_html( $wc_sku_raw );
+
 		global $wpdb;
 		$product_ids = $wpdb->get_col(
 			$wpdb->prepare(
@@ -143,7 +167,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				AND posts.post_status != 'trash'
 				AND lookup.sku = %s
 				",
-				$item['wc_sku']
+				$wc_sku_raw
 			)
 		);
 
@@ -157,14 +181,14 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 		$product_id = $product_ids[0];
 		$product = wc_get_product( $product_id );
-		
+
 		if ( $product ) {
 			$title = $product->get_name();
 			$edit_url = get_edit_post_link( $product_id );
 			$type_label = $product->is_type('variation') ? __( 'Variation', 'shopify-woo-bridge' ) : __( 'Product', 'shopify-woo-bridge' );
 			return sprintf( '<strong>%s</strong><br><a href="%s">%s (ID: %d - %s)</a>', $wc_sku, esc_url( $edit_url ), esc_html( $title ), $product_id, $type_label );
 		}
-		
+
 		return $wc_sku . ' - ' . __( 'Product Not Found', 'shopify-woo-bridge' );
 	}
 
@@ -175,9 +199,10 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return string
 	 */
 	function column_shopify_product_id( $item ) {
-		$product_id = esc_html( $item['shopify_product_id'] );
-		$variant_id = ! empty( $item['shopify_variant_id'] ) ? esc_html( $item['shopify_variant_id'] ) : '';
-		
+		$product_id = esc_html( $this->get_item_value( $item, 'shopify_product_id' ) );
+		$variant_raw = $this->get_item_value( $item, 'shopify_variant_id' );
+		$variant_id = ! empty( $variant_raw ) ? esc_html( $variant_raw ) : '';
+
 		if ( $variant_id ) {
 			return sprintf( '%s<br><small>Variant: %s</small>', $product_id, $variant_id );
 		}
@@ -233,19 +258,23 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		/** Process bulk action */
 		$this->process_bulk_action();
 
-		$per_page     = $this->get_items_per_page( 'mappings_per_page', 20 );
-		$current_page = $this->get_pagenum();
-		$total_items  = self::record_count();
+		$per_page     = max( 1, (int) $this->get_items_per_page( 'mappings_per_page', 20 ) );
+		$total_items  = (int) self::record_count();
+		$total_pages  = max( 1, (int) ceil( $total_items / $per_page ) );
+		$current_page = min( $this->get_pagenum(), $total_pages );
 
 		$this->set_pagination_args(
 			array(
 				'total_items' => $total_items, // WE have to calculate the total number of items
 				'per_page'    => $per_page, // WE have to determine how many items to show on a page
-				'total_pages' => ceil( $total_items / $per_page ), // WE have to calculate the total number of pages
+				'total_pages' => $total_pages, // WE have to calculate the total number of pages
 			)
 		);
 
 		$this->items = self::get_mappings( $per_page, $current_page );
+		if ( ! is_array( $this->items ) ) {
+			$this->items = array();
+		}
 	}
 
 	/**
@@ -257,13 +286,13 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			// Handle single delete.
 			if ( isset( $_GET['mapping'] ) ) {
 				$mapping_id = absint( $_GET['mapping'] );
-				
+
 				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_delete_mapping_' . $mapping_id ) ) {
 					die( 'Go get a life script kiddies' );
 				}
 
 				SWB_DB::delete_mapping( $mapping_id );
-				
+
 				// redirect to avoid resubmission
 				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings' ) );
 				exit;
@@ -274,7 +303,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			// Handle single toggle.
 			if ( isset( $_GET['mapping'] ) ) {
 				$mapping_id = absint( $_GET['mapping'] );
-				
+
 				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_toggle_mapping_' . $mapping_id ) ) {
 					die( 'Go get a life script kiddies' );
 				}
@@ -289,11 +318,11 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		if ( ( isset( $_POST['action'] ) && $_POST['action'] == 'bulk-delete' )
 		     || ( isset( $_POST['action2'] ) && $_POST['action2'] == 'bulk-delete' )
 		) {
-			
+
 			if ( ! wp_verify_nonce( $_POST['_wpnonce'], 'bulk-' . $this->_args['plural'] ) ) {
 				die( 'Go get a life script kiddies' );
 			}
-			
+
 			$delete_ids = esc_sql( $_POST['bulk-delete'] );
 
 			foreach ( $delete_ids as $id ) {
