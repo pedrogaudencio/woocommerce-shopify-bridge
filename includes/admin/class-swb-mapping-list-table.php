@@ -253,7 +253,12 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * Handles data query and filter, sorting, and pagination.
 	 */
 	public function prepare_items() {
-		$this->_column_headers = $this->get_column_info();
+		$columns  = $this->get_columns();
+		$hidden   = array();
+		$sortable = $this->get_sortable_columns();
+		$primary  = 'shopify_item_id';
+		// Force visible columns to avoid blank rows caused by stale per-user hidden-column settings.
+		$this->_column_headers = array( $columns, $hidden, $sortable, $primary );
 
 		/** Process bulk action */
 		$this->process_bulk_action();
