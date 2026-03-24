@@ -79,9 +79,13 @@ class Shopify_WooCommerce_Bridge {
 		// Logger class.
 		require_once SWB_PLUGIN_DIR . 'includes/class-swb-logger.php';
 
+		// Shopify API read-only client.
+		require_once SWB_PLUGIN_DIR . 'includes/class-swb-shopify-api-client.php';
+
 		// Admin classes.
 		if ( is_admin() ) {
 			require_once SWB_PLUGIN_DIR . 'includes/admin/class-swb-admin-mappings.php';
+			require_once SWB_PLUGIN_DIR . 'includes/class-swb-admin-export.php';
 		}
 
 		// REST API.
@@ -160,6 +164,10 @@ class Shopify_WooCommerce_Bridge {
 			if ( class_exists( 'SWB_Admin_Mappings' ) ) {
 				new SWB_Admin_Mappings();
 			}
+
+			if ( class_exists( 'SWB_Admin_Export' ) ) {
+				new SWB_Admin_Export();
+			}
 		}
 	}
 
@@ -192,6 +200,18 @@ class Shopify_WooCommerce_Bridge {
 		// e.g., Set default options if they don't exist.
 		if ( false === get_option( 'swb_global_enable' ) ) {
 			add_option( 'swb_global_enable', 'no' ); // Default deny/disabled
+		}
+
+		if ( false === get_option( 'swb_shopify_store_domain' ) ) {
+			add_option( 'swb_shopify_store_domain', '', '', 'no' );
+		}
+
+		if ( false === get_option( 'swb_shopify_client_id' ) ) {
+			add_option( 'swb_shopify_client_id', '', '', 'no' );
+		}
+
+		if ( false === get_option( 'swb_shopify_client_secret' ) ) {
+			add_option( 'swb_shopify_client_secret', '', '', 'no' );
 		}
 
 		// Create database tables.

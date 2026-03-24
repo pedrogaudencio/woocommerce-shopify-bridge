@@ -2,69 +2,83 @@
 
 ## Overview
 
-This plugin provides a secure, one-way stock synchronization from Shopify to WooCommerce. It is designed with a "Default Deny" philosophy: only explicitly mapped products will have their stock updated. It listens for Shopify `inventory_levels/update` webhooks.
+This plugin provides secure, one-way stock synchronization from Shopify to WooCommerce. It follows a default-deny model: only explicitly mapped products are updated from webhooks.
 
-## 1. Setup Instructions
+It also includes two admin tabs for read-only Shopify Admin API operations:
+- **Credentials:** store domain, client ID, client secret (with connection validation on save)
+- **Export:** fetch products + inventory and download a CSV
 
-### WordPress / WooCommerce Configuration
-1. **Install and Activate** the plugin in WordPress.
+## 1. WooCommerce Plugin Setup
+
+1. Install and activate the plugin in WordPress.
 2. Go to **WooCommerce > Settings > Integration > Shopify Sync**.
-3. **Global Kill Switch:** Ensure this is unchecked (disabled) to allow processing, or check it to stop all processing immediately.
-4. **Log Output:** Check this if you want to see detailed logs in WooCommerce > Status > Logs.
-5. **Shopify Webhook Secret:** You will paste the HMAC secret from Shopify here (see below). Save changes.
+3. In **General**:
+   - Configure **Global Kill Switch** as needed.
+   - Configure **Shopify Webhook Secret**.
+   - Optionally enable **Log Output**.
+4. Save changes.
 
-### Mapping Products
+## 2. Shopify Credentials Tab
+
+Go to **WooCommerce > Settings > Integration > Shopify Sync > Credentials** and fill:
+
+- **Store domain:** your `*.myshopify.com` domain
+- **Client ID:** stored for app reference
+- **Client secret:** for custom apps, place the **Admin API access token** here
+
+When saving, the plugin runs a read-only connection check against Shopify (`GET /admin/api/<version>/shop.json`).
+
+If the connection fails, WooCommerce shows a specific error returned by Shopify (for example, invalid token, unauthorized, or domain mismatch).
+
+## 3. Shopify Export Tab
+
+Go to **WooCommerce > Settings > Integration > Shopify Sync > Export** and click:
+
+**Retrieve products and inventory, then export CSV**
+
+The export action:
+- verifies permissions (`manage_woocommerce`)
+- verifies nonce (CSRF protection)
+- performs read-only GET requests only
+- fetches products with cursor pagination
+- fetches inventory levels by `inventory_item_id`
+- streams a CSV download (no Shopify write operations)
+
+## 4. Product Mapping Setup (Webhook Sync)
+
 1. Go to **WooCommerce > Shopify Mappings**.
 2. Click **Add New Mapping**.
-3. **Shopify Product ID:** Enter the ID of the parent product in Shopify.
-4. **Shopify Variant ID:** Enter the variant ID if applicable (leave blank for simple products).
-5. **Shopify Inventory Item ID:** Enter the `inventory_item_id` (this is the ID sent in Shopify webhooks).
-6. **WooCommerce SKU:** Enter the exact SKU of the product or variation in WooCommerce.
-7. Check **Enable Sync** and click **Add Mapping**.
+3. Fill Shopify and WooCommerce fields, including `inventory_item_id` and exact WooCommerce SKU.
+4. Enable sync for the mapping and save.
 
-*Note: The plugin enforces strict validation. You cannot map an SKU belonging to a variable product parent.*
+> The plugin enforces strict validation and blocks unsafe SKU targets.
 
-### Shopify Webhook Configuration
-1. In your Shopify Admin, go to **Settings > Notifications**.
-2. Click **Create webhook**.
-3. **Event:** Select `Inventory level update`.
-4. **Format:** JSON.
-5. **URL:** Enter your site's REST API endpoint: `https://your-site.com/wp-json/shopify-bridge/v1/webhook/inventory`
-6. **Webhook API version:** (Choose the latest stable).
-7. Save the webhook.
-8. Scroll down to the bottom of the Notifications page to find your **Webhook signature secret** (e.g., "Your webhooks will be verified with..."). Reveal and copy this secret.
-9. Paste this secret into the **Shopify Webhook Secret** field in the WooCommerce settings (Step 1.5).
+## 5. Shopify Webhook Configuration
 
----
+1. In Shopify Admin, go to **Settings > Notifications**.
+2. Create webhook:
+   - **Event:** Inventory level update
+   - **Format:** JSON
+   - **URL:** `https://your-site.com/wp-json/shopify-bridge/v1/webhook/inventory`
+   - **Webhook API version:** latest stable
+3. Save.
+4. Copy the webhook signature secret and place it in plugin **General** settings.
 
-## 2. Manual Testing Guide
+## 6. Security Notes
 
-You can simulate Shopify webhooks using `curl` or Postman.
+- This plugin performs Shopify writes for none of the new tab actions.
+- Credentials are only available to users with WooCommerce management capability.
+- Export action is protected by nonce and capability checks.
+- Webhook endpoint validates Shopify HMAC signatures.
 
-### Prerequisites for testing:
-1. Have a WooCommerce product set to manage stock. Let's say its SKU is `TEST-SKU-123`.
-2. Create a mapping in the plugin: Shopify Item ID `999888777` maps to WC SKU `TEST-SKU-123`.
-3. Set your webhook secret in WooCommerce settings to `test_secret`.
+## 7. Manual Webhook Test
 
-### Generating a Test Payload & Signature
-Shopify uses HMAC-SHA256. 
+Use a local payload and HMAC signature:
 
-**Test Payload (`payload.json`):**
-```json
-{
-  "inventory_item_id": 999888777,
-  "location_id": 111222333,
-  "available": 42
-}
-```
-
-**Generate HMAC (macOS/Linux):**
 ```bash
 cat payload.json | openssl dgst -sha256 -hmac "test_secret" -binary | base64
 ```
-*Assume the output of this command is `YOUR_GENERATED_HMAC_STRING`.*
 
-### Executing the Test (curl)
 ```bash
 curl -X POST https://your-site.com/wp-json/shopify-bridge/v1/webhook/inventory \
   -H "Content-Type: application/json" \
@@ -72,19 +86,11 @@ curl -X POST https://your-site.com/wp-json/shopify-bridge/v1/webhook/inventory \
   -d @payload.json
 ```
 
-### Expected Results:
-1. **Success (Simple Product/Variation):** Stock for product with SKU `TEST-SKU-123` changes to `42`. Response: `{"status":"success","reason":"stock_updated","new_stock":42}`.
-2. **Invalid Variable Product Target:** If the SKU mapped belongs to a variable product parent (which cannot hold stock directly), result should be HTTP 200 OK with `{"status":"error","reason":"variable_product_requires_variation"}`.
-3. **Duplicate SKUs:** If the mapped SKU exists on multiple products in WooCommerce, result should be HTTP 200 OK with `{"status":"error","reason":"duplicate_wc_sku"}`.
-4. **Invalid Signature:** Change `test_secret` or alter the JSON payload without recalculating the HMAC. Result should be HTTP 401 Unauthorized.
-5. **Unmapped Item:** Change `inventory_item_id` in the JSON to `0000`. Result should be HTTP 200 OK with response: `{"status":"ignored","reason":"unmapped_item"}`.
-6. **Global Kill Switch Enabled:** Enable the kill switch in settings and resend valid payload. Result should be HTTP 200 OK with response: `{"status":"ignored","reason":"global_sync_disabled"}`.
+## 8. Acceptance Criteria
 
-## 3. Acceptance Criteria (Phase 1)
-- [x] Webhook endpoint exists and is secure (verifies HMAC-SHA256).
-- [x] Settings page exists to configure secret and global disable.
-- [x] Mappings UI exists to explicitly link Shopify Inventory Items to WC SKUs.
-- [x] Enforces strict validation preventing mapping to variable product parents or handling duplicate SKUs.
-- [x] Processing follows "Default Deny": Unmapped items are safely ignored (returns 200 to Shopify, logs event, does not update stock).
-- [x] Valid mapped payloads successfully update absolute stock quantities in WooCommerce (including variation stock via SKU).
-- [x] All significant actions (success, failure, ignored) are logged to the WC Logger if logging is enabled.
+- [x] Webhook endpoint exists and verifies HMAC-SHA256.
+- [x] Admin settings include credentials and export tabs.
+- [x] Saving credentials performs read-only connection validation.
+- [x] Export action only performs GET operations and returns CSV.
+- [x] Mappings remain explicit and default-deny.
+- [x] Significant events are loggable through WooCommerce logs.
