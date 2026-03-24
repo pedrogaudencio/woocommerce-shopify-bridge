@@ -87,19 +87,9 @@ class SWB_Admin_Export {
 			$this->redirect_with_notice( 'error', $levels_by_item->get_error_message() );
 		}
 
-		$this->store_next_notice(
-			'success',
-			sprintf(
-				/* translators: 1: product count. 2: inventory item count. */
-				__( 'Export completed: %1$d products and %2$d inventory item groups were retrieved.', 'shopify-woo-bridge' ),
-				count( $products ),
-				count( $levels_by_item )
-			)
-		);
-
-		$this->stream_csv( $products, $levels_by_item );
-		exit;
-	}
+ 		$this->stream_csv( $products, $levels_by_item );
+ 		exit;
+ 	}
 
 	/**
 	 * Collect inventory item IDs from product variants.
@@ -130,18 +120,14 @@ class SWB_Admin_Export {
 	 */
 	private function stream_csv( $products, $levels_by_item ) {
 		$filename = 'shopify-products-inventory-' . gmdate( 'Ymd-His' ) . '.csv';
+		$temp     = fopen( 'php://temp/maxmemory:5242880', 'w+' );
 
-		nocache_headers();
-		header( 'Content-Type: text/csv; charset=utf-8' );
-		header( 'Content-Disposition: attachment; filename=' . $filename );
-
-		$output = fopen( 'php://output', 'w' );
-		if ( ! $output ) {
+		if ( ! $temp ) {
 			wp_die( esc_html__( 'Unable to generate CSV output.', 'shopify-woo-bridge' ) );
 		}
 
 		fputcsv(
-			$output,
+			$temp,
 			$this->sanitize_csv_row(
 				array(
 					'product_id',
@@ -168,7 +154,7 @@ class SWB_Admin_Export {
 
 			if ( empty( $variants ) ) {
 				fputcsv(
-					$output,
+					$temp,
 					$this->sanitize_csv_row(
 						array(
 							isset( $product['id'] ) ? strval( $product['id'] ) : '',
@@ -198,7 +184,7 @@ class SWB_Admin_Export {
 
 				if ( empty( $levels ) ) {
 					fputcsv(
-						$output,
+						$temp,
 						$this->sanitize_csv_row(
 							array(
 								isset( $product['id'] ) ? strval( $product['id'] ) : '',
@@ -224,7 +210,7 @@ class SWB_Admin_Export {
 
 				foreach ( $levels as $level ) {
 					fputcsv(
-						$output,
+						$temp,
 						$this->sanitize_csv_row(
 							array(
 								isset( $product['id'] ) ? strval( $product['id'] ) : '',
@@ -249,7 +235,25 @@ class SWB_Admin_Export {
 			}
 		}
 
-		fclose( $output );
+		$size = ftell( $temp );
+		rewind( $temp );
+
+		while ( ob_get_level() > 0 ) {
+			ob_end_clean();
+		}
+
+		nocache_headers();
+		header( 'X-Content-Type-Options: nosniff' );
+		header( 'Content-Description: File Transfer' );
+		header( 'Content-Type: text/csv; charset=utf-8' );
+		header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+		header( 'Content-Transfer-Encoding: binary' );
+		if ( false !== $size ) {
+			header( 'Content-Length: ' . intval( $size ) );
+		}
+
+		fpassthru( $temp );
+		fclose( $temp );
 
 		SWB_Logger::info(
 			'Shopify CSV export completed.',
@@ -278,8 +282,8 @@ class SWB_Admin_Export {
 			);
 		}
 
-		$stored_notice = $this->consume_next_notice();
-		$is_settings_screen = isset( $_GET['page'], $_GET['tab'] ) && 'wc-settings' === $_GET['page'] && 'integration' === $_GET['tab'];
+		$stored_notice     = $this->consume_next_notice();
+		$is_settings_screen = isset( $_GET['page'], $_GET['tab'] ) && 'wc-settings' === $_GET['page'] && in_array( $_GET['tab'], array( 'shopify_bridge', 'integration' ), true );
 		if ( $is_settings_screen && ! empty( $stored_notice ) ) {
 			$notices[] = $stored_notice;
 		}
@@ -361,7 +365,7 @@ class SWB_Admin_Export {
 	 * @return string
 	 */
 	private function get_settings_return_url() {
-		return admin_url( 'admin.php?page=wc-settings&tab=integration&section=shopify_bridge' );
+		return admin_url( 'admin.php?page=wc-settings&tab=shopify_bridge' );
 	}
 
 	/**
