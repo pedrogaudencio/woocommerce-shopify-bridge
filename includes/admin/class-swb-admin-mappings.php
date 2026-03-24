@@ -28,6 +28,7 @@ class SWB_Admin_Mappings {
 		add_action( 'admin_menu', array( $this, 'add_plugin_page' ) );
 		add_action( 'admin_init', array( $this, 'handle_add_mapping' ) );
 		add_action( 'admin_init', array( $this, 'handle_fetch_all_shopify_ids' ) );
+		add_action( 'admin_init', array( $this, 'handle_bulk_sync_images' ) );
 		add_action( 'admin_init', array( $this, 'handle_settings_save' ) );
 		add_action( 'admin_init', array( $this, 'maybe_redirect_legacy_settings_url' ) );
 	}
@@ -91,6 +92,13 @@ class SWB_Admin_Mappings {
 				<input type="hidden" name="tab" value="mappings" />
 				<input type="hidden" name="swb_fetch_all_shopify_ids" value="1" />
 				<?php submit_button( __( 'Fetch all Shopify IDs from products', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
+			</form>
+			<form method="post" action="" style="display: inline-block; margin-left: 8px;">
+				<?php wp_nonce_field( 'swb_bulk_sync_images_action', 'swb_bulk_sync_images_nonce' ); ?>
+				<input type="hidden" name="page" value="shopify-bridge-mappings" />
+				<input type="hidden" name="tab" value="mappings" />
+				<input type="hidden" name="swb_bulk_sync_images" value="1" />
+				<?php submit_button( __( 'Sync Images for all eligible mappings', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
 			</form>
 		</div>
 		<div id="poststuff">
@@ -398,6 +406,110 @@ class SWB_Admin_Mappings {
 	}
 
 	/**
+	 * Handle bulk manual image sync for all eligible mapping groups.
+	 */
+	public function handle_bulk_sync_images() {
+		if ( ! isset( $_POST['swb_bulk_sync_images'] ) ) {
+			return;
+		}
+
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_die( 'Unauthorized.' );
+		}
+
+		if ( ! isset( $_POST['swb_bulk_sync_images_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['swb_bulk_sync_images_nonce'] ) ), 'swb_bulk_sync_images_action' ) ) {
+			wp_die( 'Security check failed.' );
+		}
+
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'swb_mappings';
+
+		$rows = $wpdb->get_results(
+			"
+			SELECT *
+			FROM {$table_name}
+			WHERE is_enabled = 1
+			ORDER BY shopify_product_id ASC, id ASC
+			"
+		);
+
+		$processed_groups = 0;
+		$changed_groups   = 0;
+		$unchanged_groups = 0;
+		$failed_groups    = 0;
+		$skipped_groups   = 0;
+		$seen_products    = array();
+
+		$sync_service = new SWB_Image_Sync();
+
+		foreach ( $rows as $row ) {
+			$shopify_product_id = isset( $row->shopify_product_id ) ? trim( (string) $row->shopify_product_id ) : '';
+
+			if ( '' === $shopify_product_id ) {
+				$this->set_mapping_media_sync_status( absint( $row->id ), 'error', __( 'Missing Shopify Product ID.', 'shopify-woo-bridge' ) );
+				$skipped_groups++;
+				continue;
+			}
+
+			if ( isset( $seen_products[ $shopify_product_id ] ) ) {
+				continue;
+			}
+
+			$seen_products[ $shopify_product_id ] = true;
+			$processed_groups++;
+
+			$result = $sync_service->sync_images_for_mapping( $row );
+			$group_rows = SWB_DB::get_mappings_by_shopify_product_id( $shopify_product_id );
+
+			if ( ! empty( $result['success'] ) ) {
+				if ( ! empty( $result['changed'] ) ) {
+					$changed_groups++;
+					$status = 'changed';
+				} else {
+					$unchanged_groups++;
+					$status = 'unchanged';
+				}
+
+				foreach ( $group_rows as $group_row ) {
+					$this->set_mapping_media_sync_status( absint( $group_row->id ), $status, '' );
+				}
+				continue;
+			}
+
+			$failed_groups++;
+			$error_message = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
+			foreach ( $group_rows as $group_row ) {
+				$this->set_mapping_media_sync_status( absint( $group_row->id ), 'error', $error_message );
+			}
+		}
+
+		$notice_type = $failed_groups > 0 ? 'error' : 'success';
+		$message     = sprintf(
+			/* translators: 1: processed groups, 2: changed groups, 3: unchanged groups, 4: failed groups, 5: skipped groups. */
+			__( 'Bulk image sync complete. Processed groups: %1$d, Changed: %2$d, Unchanged: %3$d, Failed: %4$d, Skipped: %5$d.', 'shopify-woo-bridge' ),
+			$processed_groups,
+			$changed_groups,
+			$unchanged_groups,
+			$failed_groups,
+			$skipped_groups
+		);
+
+		$redirect_url = add_query_arg(
+			array(
+				'page'        => 'shopify-bridge-mappings',
+				'tab'         => 'mappings',
+				'swb_notice'  => '1',
+				'swb_type'    => $notice_type,
+				'swb_message' => $message,
+			),
+			admin_url( 'admin.php' )
+		);
+
+		wp_safe_redirect( $redirect_url );
+		exit;
+	}
+
+	/**
 	 * Render action notice passed via query string.
 	 */
 	private function render_action_notice() {
@@ -414,6 +526,29 @@ class SWB_Admin_Mappings {
 
 		$notice_class = 'success' === $type ? 'notice-success' : 'notice-error';
 		echo '<div class="notice ' . esc_attr( $notice_class ) . ' is-dismissible"><p>' . esc_html( $message ) . '</p></div>';
+	}
+
+	/**
+	 * Persist media sync status and error for a specific mapping row.
+	 *
+	 * @param int    $mapping_id Mapping ID.
+	 * @param string $result changed|unchanged|error.
+	 * @param string $error_message Error message.
+	 */
+	private function set_mapping_media_sync_status( $mapping_id, $result, $error_message ) {
+		$mapping_id = absint( $mapping_id );
+		if ( $mapping_id <= 0 ) {
+			return;
+		}
+
+		update_option( 'swb_mapping_media_sync_result_' . $mapping_id, sanitize_key( $result ) );
+
+		if ( '' === trim( (string) $error_message ) ) {
+			delete_option( 'swb_mapping_media_sync_error_' . $mapping_id );
+			return;
+		}
+
+		update_option( 'swb_mapping_media_sync_error_' . $mapping_id, sanitize_text_field( $error_message ) );
 	}
 
 	/**
