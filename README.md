@@ -15,6 +15,7 @@ Phase 1 focuses on webhook-driven inventory updates, and now also includes secur
 - **Secure Webhooks:** Validates all incoming payloads using Shopify's standard HMAC-SHA256 signature verification.
 - **Explicit Mappings:** Custom admin interface to link Shopify Product and Variant IDs directly to WooCommerce Product and Variation IDs.
 - **Credentials Tab + Connection Test:** Stores Shopify store domain, client ID, and client secret, and provides an explicit read-only test-connection action.
+- **Automatic Token Generation:** Uses Shopify client credentials flow to generate and cache an Admin API access token, refreshing it automatically after 24 hours.
 - **Read-Only Export Tab:** One-click action to fetch Shopify products and inventory levels and download a CSV export.
 - **Safety Controls:** Includes a global kill switch to instantly disable sync without deleting settings or mappings.
 - **Diagnostics:** Integrates with the native WooCommerce Logger (`WC_Logger`) for clear operational visibility.

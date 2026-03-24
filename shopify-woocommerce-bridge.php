@@ -214,6 +214,14 @@ class Shopify_WooCommerce_Bridge {
 			add_option( 'swb_shopify_client_secret', '', '', 'no' );
 		}
 
+		if ( false === get_option( 'swb_shopify_access_token' ) ) {
+			add_option( 'swb_shopify_access_token', '', '', 'no' );
+		}
+
+		if ( false === get_option( 'swb_shopify_access_token_created_at' ) ) {
+			add_option( 'swb_shopify_access_token_created_at', 0, '', 'no' );
+		}
+
 		// Create database tables.
 		require_once SWB_PLUGIN_DIR . 'includes/class-swb-db.php';
 		SWB_DB::create_tables();

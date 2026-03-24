@@ -98,12 +98,22 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 			$client_id = sanitize_text_field( $raw_id );
 			$secret    = trim( (string) $raw_secret );
 
+			$old_domain = trim( (string) get_option( 'swb_shopify_store_domain', '' ) );
+			$old_id     = trim( (string) get_option( 'swb_shopify_client_id', '' ) );
+
 			update_option( 'swb_shopify_store_domain', $domain );
 			update_option( 'swb_shopify_client_id', $client_id );
 
-			// Keep the existing secret if an empty value was submitted.
+			$secret_updated = false;
+			// Keep the existing client secret if an empty value was submitted.
 			if ( '' !== $secret ) {
 				update_option( 'swb_shopify_client_secret', $secret );
+				$secret_updated = true;
+			}
+
+			if ( $old_domain !== $domain || $old_id !== $client_id || $secret_updated ) {
+				delete_option( 'swb_shopify_access_token' );
+				delete_option( 'swb_shopify_access_token_created_at' );
 			}
 
 			WC_Admin_Settings::add_message( __( 'Credentials saved. Use "Test connection" to validate access.', 'shopify-woo-bridge' ) );
@@ -200,7 +210,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 					array(
 						'title' => __( 'Shopify App Credentials', 'shopify-woo-bridge' ),
 						'type'  => 'title',
-						'desc'  => __( 'Store credentials used for read-only Shopify Admin API calls. This plugin only performs GET requests.', 'shopify-woo-bridge' ),
+						'desc'  => __( 'Credentials used to generate a temporary Admin API token via Shopify client credentials flow. This plugin only performs GET requests.', 'shopify-woo-bridge' ),
 						'id'    => 'swb_credentials_options',
 					),
 					array(
@@ -220,7 +230,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 						'id'                => 'swb_shopify_client_id',
 						'default'           => '',
 						'css'               => 'min-width: 300px;',
-						'desc'              => __( 'Stored for app reference. Read-only API calls use the token in Client secret.', 'shopify-woo-bridge' ),
+						'desc'              => __( 'From Shopify Dev Dashboard app credentials.', 'shopify-woo-bridge' ),
 						'custom_attributes' => array(
 							'autocomplete' => 'off',
 						),
@@ -231,7 +241,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 						'id'                => 'swb_shopify_client_secret',
 						'default'           => '',
 						'css'               => 'min-width: 300px;',
-						'desc'              => __( 'For custom apps, use the Admin API access token value here.', 'shopify-woo-bridge' ) . ( $masked_secret_note ? ' ' . $masked_secret_note : '' ),
+						'desc'              => __( 'From Shopify Dev Dashboard app credentials. Used to generate an Admin API token.', 'shopify-woo-bridge' ) . ( $masked_secret_note ? ' ' . $masked_secret_note : '' ),
 						'custom_attributes' => array(
 							'autocomplete' => 'new-password',
 						),

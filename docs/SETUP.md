@@ -5,7 +5,7 @@
 This plugin provides secure, one-way stock synchronization from Shopify to WooCommerce. It follows a default-deny model: only explicitly mapped products are updated from webhooks.
 
 It also includes two admin tabs for read-only Shopify Admin API operations:
-- **Credentials:** store domain, client ID, client secret (with explicit test-connection button)
+- **Credentials:** store domain, client ID, Client secret (with explicit test-connection button)
 - **Export:** fetch products + inventory and download a CSV
 
 ## 1. WooCommerce Plugin Setup
@@ -23,14 +23,25 @@ It also includes two admin tabs for read-only Shopify Admin API operations:
 Go to **WooCommerce > Settings > Integration > Shopify Sync > Credentials** and fill:
 
 - **Store domain:** your `*.myshopify.com` domain
-- **Client ID:** stored for app reference
-- **Client secret:** for custom apps, place the **Admin API access token** here
+- **Client ID:** from Shopify Dev Dashboard app credentials
+- **Client secret:** from Shopify Dev Dashboard app credentials
 
 Saving credentials stores them securely for admin users with WooCommerce settings access.
 
 Use **Test Shopify connection** (separate button) to run a read-only connection check against Shopify (`GET /admin/api/<version>/shop.json`).
 
-If the connection fails, WooCommerce shows a specific error returned by Shopify (for example, invalid token, unauthorized, or domain mismatch).
+The plugin automatically requests a temporary Admin API access token using:
+
+- `POST https://{store-domain}/admin/oauth/access_token`
+- body: `client_id`, `client_secret`, `grant_type=client_credentials`
+
+The generated token is cached with a creation timestamp and refreshed automatically when older than 24 hours.
+
+If the connection fails, WooCommerce shows a specific error returned by Shopify (for example, invalid credentials, unauthorized, or domain mismatch).
+
+Official references:
+- https://help.shopify.com/en/manual/apps/app-types/custom-apps
+- https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/generate-app-access-tokens-admin
 
 ## 3. Shopify Export Tab
 

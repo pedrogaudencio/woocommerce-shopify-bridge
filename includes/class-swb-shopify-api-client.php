@@ -22,6 +22,13 @@ class SWB_Shopify_API_Client {
 	const API_VERSION = '2025-10';
 
 	/**
+	 * Token lifetime in seconds for Dev Dashboard client credentials flow.
+	 *
+	 * @var int
+	 */
+	const ACCESS_TOKEN_TTL = 86400;
+
+	/**
 	 * Validate credentials by performing a read-only shop query.
 	 *
 	 * @return array
@@ -274,7 +281,7 @@ class SWB_Shopify_API_Client {
 		$headers = array(
 			'Accept'                 => 'application/json',
 			'User-Agent'             => 'Shopify-WooCommerce-Bridge/' . SWB_VERSION . '; ' . home_url( '/' ),
-			'X-Shopify-Access-Token' => $auth['client_secret'],
+			'X-Shopify-Access-Token' => $auth['access_token'],
 		);
 
 		return $headers;
@@ -315,15 +322,95 @@ class SWB_Shopify_API_Client {
 	 * @return array|WP_Error
 	 */
 	private function get_auth_values() {
-		$client_secret = trim( (string) get_option( 'swb_shopify_client_secret', '' ) );
-		if ( '' === $client_secret ) {
-			return new WP_Error( 'swb_secret_missing', __( 'Shopify client secret is not configured.', 'shopify-woo-bridge' ) );
+		$access_token = $this->get_or_refresh_access_token();
+		if ( is_wp_error( $access_token ) ) {
+			return $access_token;
 		}
 
 		return array(
-			'client_id'     => trim( (string) get_option( 'swb_shopify_client_id', '' ) ),
-			'client_secret' => $client_secret,
+			'access_token' => $access_token,
 		);
+	}
+
+	/**
+	 * Return a valid cached token or generate a new one if expired/missing.
+	 *
+	 * @return string|WP_Error
+	 */
+	private function get_or_refresh_access_token() {
+		$cached_token      = trim( (string) get_option( 'swb_shopify_access_token', '' ) );
+		$created_timestamp = intval( get_option( 'swb_shopify_access_token_created_at', 0 ) );
+		$now               = time();
+
+		if ( '' !== $cached_token && $created_timestamp > 0 && ( $now - $created_timestamp ) < self::ACCESS_TOKEN_TTL ) {
+			return $cached_token;
+		}
+
+		$generated = $this->generate_access_token();
+		if ( is_wp_error( $generated ) ) {
+			return $generated;
+		}
+
+		update_option( 'swb_shopify_access_token', $generated );
+		update_option( 'swb_shopify_access_token_created_at', $now );
+
+		return $generated;
+	}
+
+	/**
+	 * Generate an Admin API token using client credentials.
+	 *
+	 * @return string|WP_Error
+	 */
+	private function generate_access_token() {
+		$store_domain = $this->get_store_domain();
+		if ( empty( $store_domain ) ) {
+			return new WP_Error( 'swb_store_missing', __( 'Shopify store domain is not configured.', 'shopify-woo-bridge' ) );
+		}
+
+		$client_id     = trim( (string) get_option( 'swb_shopify_client_id', '' ) );
+		$client_secret = trim( (string) get_option( 'swb_shopify_client_secret', '' ) );
+
+		if ( '' === $client_id || '' === $client_secret ) {
+			return new WP_Error( 'swb_client_credentials_missing', __( 'Shopify client ID or client secret is not configured.', 'shopify-woo-bridge' ) );
+		}
+
+		$url = 'https://' . $store_domain . '/admin/oauth/access_token';
+
+		$response = wp_remote_post(
+			$url,
+			array(
+				'timeout' => 30,
+				'headers' => array(
+					'Accept'       => 'application/json',
+					'Content-Type' => 'application/json',
+				),
+				'body'    => wp_json_encode(
+					array(
+						'client_id'     => $client_id,
+						'client_secret' => $client_secret,
+						'grant_type'    => 'client_credentials',
+					)
+				),
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+
+		if ( intval( $code ) < 200 || intval( $code ) >= 300 ) {
+			return new WP_Error( 'swb_token_request_failed', $this->build_error_message( $code, is_array( $body ) ? $body : array() ) );
+		}
+
+		if ( empty( $body['access_token'] ) || ! is_string( $body['access_token'] ) ) {
+			return new WP_Error( 'swb_token_missing', __( 'Shopify token response did not include an access token.', 'shopify-woo-bridge' ) );
+		}
+
+		return trim( $body['access_token'] );
 	}
 
 	/**

@@ -268,17 +268,10 @@ class SWB_Admin_Export {
 			return;
 		}
 
-		if ( ! isset( $_GET['page'], $_GET['tab'] ) || 'wc-settings' !== $_GET['page'] || 'integration' !== $_GET['tab'] ) {
-			return;
-		}
-
-		if ( ! isset( $_GET['section'] ) || 'shopify_bridge' !== $_GET['section'] ) {
-			return;
-		}
-
 		$notices = array();
+		$has_query_notice = isset( $_GET['swb_notice'], $_GET['swb_notice_type'], $_GET['swb_notice_message'] ) && '1' === $_GET['swb_notice'];
 
-		if ( isset( $_GET['swb_notice'], $_GET['swb_notice_type'], $_GET['swb_notice_message'] ) && '1' === $_GET['swb_notice'] ) {
+		if ( $has_query_notice ) {
 			$notices[] = array(
 				'type'    => sanitize_key( wp_unslash( $_GET['swb_notice_type'] ) ),
 				'message' => sanitize_text_field( wp_unslash( $_GET['swb_notice_message'] ) ),
@@ -286,8 +279,13 @@ class SWB_Admin_Export {
 		}
 
 		$stored_notice = $this->consume_next_notice();
-		if ( ! empty( $stored_notice ) ) {
+		$is_settings_screen = isset( $_GET['page'], $_GET['tab'] ) && 'wc-settings' === $_GET['page'] && 'integration' === $_GET['tab'];
+		if ( $is_settings_screen && ! empty( $stored_notice ) ) {
 			$notices[] = $stored_notice;
+		}
+
+		if ( empty( $notices ) ) {
+			return;
 		}
 
 		foreach ( $notices as $notice ) {
@@ -363,11 +361,6 @@ class SWB_Admin_Export {
 	 * @return string
 	 */
 	private function get_settings_return_url() {
-		$referer = wp_get_referer();
-		if ( ! empty( $referer ) ) {
-			return remove_query_arg( array( 'action', 'swb_notice', 'swb_notice_type', 'swb_notice_message' ), $referer );
-		}
-
 		return admin_url( 'admin.php?page=wc-settings&tab=integration&section=shopify_bridge' );
 	}
 
