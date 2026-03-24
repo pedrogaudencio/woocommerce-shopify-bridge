@@ -14,7 +14,7 @@ Phase 1 focuses on webhook-driven inventory updates, and now also includes secur
 - **Default Deny Architecture:** Products are ignored by default. Stock updates only occur for items that are explicitly mapped in the WooCommerce admin.
 - **Secure Webhooks:** Validates all incoming payloads using Shopify's standard HMAC-SHA256 signature verification.
 - **Explicit Mappings:** Custom admin interface to link Shopify Product and Variant IDs directly to WooCommerce Product and Variation IDs.
-- **Credentials Tab + Connection Test:** Stores Shopify store domain, client ID, and client secret, then runs a read-only connection check when saving.
+- **Credentials Tab + Connection Test:** Stores Shopify store domain, client ID, and client secret, and provides an explicit read-only test-connection action.
 - **Read-Only Export Tab:** One-click action to fetch Shopify products and inventory levels and download a CSV export.
 - **Safety Controls:** Includes a global kill switch to instantly disable sync without deleting settings or mappings.
 - **Diagnostics:** Integrates with the native WooCommerce Logger (`WC_Logger`) for clear operational visibility.

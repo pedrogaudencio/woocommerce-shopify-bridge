@@ -5,7 +5,7 @@
 This plugin provides secure, one-way stock synchronization from Shopify to WooCommerce. It follows a default-deny model: only explicitly mapped products are updated from webhooks.
 
 It also includes two admin tabs for read-only Shopify Admin API operations:
-- **Credentials:** store domain, client ID, client secret (with connection validation on save)
+- **Credentials:** store domain, client ID, client secret (with explicit test-connection button)
 - **Export:** fetch products + inventory and download a CSV
 
 ## 1. WooCommerce Plugin Setup
@@ -26,7 +26,9 @@ Go to **WooCommerce > Settings > Integration > Shopify Sync > Credentials** and 
 - **Client ID:** stored for app reference
 - **Client secret:** for custom apps, place the **Admin API access token** here
 
-When saving, the plugin runs a read-only connection check against Shopify (`GET /admin/api/<version>/shop.json`).
+Saving credentials stores them securely for admin users with WooCommerce settings access.
+
+Use **Test Shopify connection** (separate button) to run a read-only connection check against Shopify (`GET /admin/api/<version>/shop.json`).
 
 If the connection fails, WooCommerce shows a specific error returned by Shopify (for example, invalid token, unauthorized, or domain mismatch).
 
@@ -43,6 +45,7 @@ The export action:
 - fetches products with cursor pagination
 - fetches inventory levels by `inventory_item_id`
 - streams a CSV download (no Shopify write operations)
+- uses admin notices for success/failure feedback (instead of hard error pages)
 
 ## 4. Product Mapping Setup (Webhook Sync)
 
@@ -90,7 +93,7 @@ curl -X POST https://your-site.com/wp-json/shopify-bridge/v1/webhook/inventory \
 
 - [x] Webhook endpoint exists and verifies HMAC-SHA256.
 - [x] Admin settings include credentials and export tabs.
-- [x] Saving credentials performs read-only connection validation.
+- [x] Credentials can be validated via a separate read-only test-connection action.
 - [x] Export action only performs GET operations and returns CSV.
 - [x] Mappings remain explicit and default-deny.
 - [x] Significant events are loggable through WooCommerce logs.

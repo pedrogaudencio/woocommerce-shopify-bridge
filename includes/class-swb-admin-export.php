@@ -15,10 +15,44 @@ if ( ! defined( 'ABSPATH' ) ) {
 class SWB_Admin_Export {
 
 	/**
+	 * User-scoped transient key prefix for admin notices.
+	 *
+	 * @var string
+	 */
+	const NOTICE_TRANSIENT_PREFIX = 'swb_admin_notice_';
+
+	/**
 	 * Constructor.
 	 */
 	public function __construct() {
 		add_action( 'admin_post_swb_export_shopify_csv', array( $this, 'handle_export' ) );
+		add_action( 'admin_post_swb_test_shopify_connection', array( $this, 'handle_test_connection' ) );
+		add_action( 'admin_notices', array( $this, 'render_admin_notices' ) );
+	}
+
+	/**
+	 * Handle explicit test connection request.
+	 */
+	public function handle_test_connection() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_die( esc_html__( 'You do not have permission to test Shopify connection.', 'shopify-woo-bridge' ) );
+		}
+
+		check_admin_referer( 'swb_test_shopify_connection', 'swb_test_connection_nonce' );
+
+		$api        = new SWB_Shopify_API_Client();
+		$connection = $api->test_connection();
+
+		if ( empty( $connection['success'] ) ) {
+			$message = isset( $connection['message'] ) ? $connection['message'] : __( 'Connection failed.', 'shopify-woo-bridge' );
+			SWB_Logger::error( 'Manual Shopify connection test failed.', array( 'message' => $message ) );
+			$this->redirect_with_notice( 'error', $message );
+		}
+
+		$this->redirect_with_notice(
+			'success',
+			isset( $connection['message'] ) ? $connection['message'] : __( 'Connection successful.', 'shopify-woo-bridge' )
+		);
 	}
 
 	/**
@@ -35,22 +69,33 @@ class SWB_Admin_Export {
 
 		$connection = $api->test_connection();
 		if ( empty( $connection['success'] ) ) {
-			SWB_Logger::error( 'CSV export failed during Shopify connection test.', array( 'message' => isset( $connection['message'] ) ? $connection['message'] : '' ) );
-			wp_die( esc_html( isset( $connection['message'] ) ? $connection['message'] : __( 'Unable to connect to Shopify.', 'shopify-woo-bridge' ) ) );
+			$message = isset( $connection['message'] ) ? $connection['message'] : __( 'Unable to connect to Shopify.', 'shopify-woo-bridge' );
+			SWB_Logger::error( 'CSV export failed during Shopify connection test.', array( 'message' => $message ) );
+			$this->redirect_with_notice( 'error', $message );
 		}
 
 		$products = $api->get_products();
 		if ( is_wp_error( $products ) ) {
 			SWB_Logger::error( 'CSV export failed while fetching products.', array( 'error' => $products->get_error_message() ) );
-			wp_die( esc_html( $products->get_error_message() ) );
+			$this->redirect_with_notice( 'error', $products->get_error_message() );
 		}
 
 		$inventory_item_ids = $this->extract_inventory_item_ids( $products );
 		$levels_by_item     = $api->get_inventory_levels_for_item_ids( $inventory_item_ids );
 		if ( is_wp_error( $levels_by_item ) ) {
 			SWB_Logger::error( 'CSV export failed while fetching inventory levels.', array( 'error' => $levels_by_item->get_error_message() ) );
-			wp_die( esc_html( $levels_by_item->get_error_message() ) );
+			$this->redirect_with_notice( 'error', $levels_by_item->get_error_message() );
 		}
+
+		$this->store_next_notice(
+			'success',
+			sprintf(
+				/* translators: 1: product count. 2: inventory item count. */
+				__( 'Export completed: %1$d products and %2$d inventory item groups were retrieved.', 'shopify-woo-bridge' ),
+				count( $products ),
+				count( $levels_by_item )
+			)
+		);
 
 		$this->stream_csv( $products, $levels_by_item );
 		exit;
@@ -213,6 +258,117 @@ class SWB_Admin_Export {
 				'inventory_item_count' => count( $levels_by_item ),
 			)
 		);
+	}
+
+	/**
+	 * Render admin notices for this plugin's actions.
+	 */
+	public function render_admin_notices() {
+		if ( ! is_admin() || ! current_user_can( 'manage_woocommerce' ) ) {
+			return;
+		}
+
+		if ( ! isset( $_GET['page'], $_GET['tab'] ) || 'wc-settings' !== $_GET['page'] || 'integration' !== $_GET['tab'] ) {
+			return;
+		}
+
+		if ( ! isset( $_GET['section'] ) || 'shopify_bridge' !== $_GET['section'] ) {
+			return;
+		}
+
+		$notices = array();
+
+		if ( isset( $_GET['swb_notice'], $_GET['swb_notice_type'], $_GET['swb_notice_message'] ) && '1' === $_GET['swb_notice'] ) {
+			$notices[] = array(
+				'type'    => sanitize_key( wp_unslash( $_GET['swb_notice_type'] ) ),
+				'message' => sanitize_text_field( wp_unslash( $_GET['swb_notice_message'] ) ),
+			);
+		}
+
+		$stored_notice = $this->consume_next_notice();
+		if ( ! empty( $stored_notice ) ) {
+			$notices[] = $stored_notice;
+		}
+
+		foreach ( $notices as $notice ) {
+			$type = isset( $notice['type'] ) && 'success' === $notice['type'] ? 'success' : 'error';
+			echo '<div class="notice notice-' . esc_attr( $type ) . ' is-dismissible"><p>' . esc_html( $notice['message'] ) . '</p></div>';
+		}
+	}
+
+	/**
+	 * Redirect to settings with a query-string notice.
+	 *
+	 * @param string $type Notice type.
+	 * @param string $message Notice message.
+	 */
+	private function redirect_with_notice( $type, $message ) {
+		$url = $this->get_settings_return_url();
+		$url = add_query_arg(
+			array(
+				'swb_notice'         => '1',
+				'swb_notice_type'    => 'success' === $type ? 'success' : 'error',
+				'swb_notice_message' => sanitize_text_field( $message ),
+			),
+			$url
+		);
+
+		wp_safe_redirect( $url );
+		exit;
+	}
+
+	/**
+	 * Store a notice for the user's next admin page load.
+	 *
+	 * @param string $type Notice type.
+	 * @param string $message Notice message.
+	 */
+	private function store_next_notice( $type, $message ) {
+		$user_id = get_current_user_id();
+		if ( $user_id <= 0 ) {
+			return;
+		}
+
+		set_transient(
+			self::NOTICE_TRANSIENT_PREFIX . $user_id,
+			array(
+				'type'    => 'success' === $type ? 'success' : 'error',
+				'message' => sanitize_text_field( $message ),
+			),
+			30 * MINUTE_IN_SECONDS
+		);
+	}
+
+	/**
+	 * Retrieve and clear any pending user notice.
+	 *
+	 * @return array
+	 */
+	private function consume_next_notice() {
+		$user_id = get_current_user_id();
+		if ( $user_id <= 0 ) {
+			return array();
+		}
+
+		$key    = self::NOTICE_TRANSIENT_PREFIX . $user_id;
+		$notice = get_transient( $key );
+		delete_transient( $key );
+
+		return is_array( $notice ) ? $notice : array();
+	}
+
+	/**
+	 * Resolve where action handlers should redirect on completion.
+	 *
+	 * @return string
+	 */
+	private function get_settings_return_url() {
+		$referer = wp_get_referer();
+		if ( ! empty( $referer ) ) {
+			return remove_query_arg( array( 'action', 'swb_notice', 'swb_notice_type', 'swb_notice_message' ), $referer );
+		}
+
+		return admin_url( 'admin.php?page=wc-settings&tab=integration&section=shopify_bridge' );
 	}
 
 	/**

@@ -24,6 +24,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 			$this->label = __( 'Shopify Sync', 'shopify-woo-bridge' );
 
 			add_action( 'woocommerce_admin_field_swb_export_action', array( $this, 'render_export_action_field' ) );
+			add_action( 'woocommerce_admin_field_swb_test_connection_action', array( $this, 'render_test_connection_action_field' ) );
 
 			parent::__construct();
 		}
@@ -77,7 +78,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 		}
 
 		/**
-		 * Save credentials section and run a read-only Shopify connection test.
+		 * Save credentials section.
 		 */
 		private function save_credentials_section() {
 			if ( ! current_user_can( 'manage_woocommerce' ) ) {
@@ -105,22 +106,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 				update_option( 'swb_shopify_client_secret', $secret );
 			}
 
-			if ( '' === $domain || '' === trim( (string) get_option( 'swb_shopify_client_secret', '' ) ) ) {
-				WC_Admin_Settings::add_error( __( 'Connection test skipped. Store domain and client secret are required.', 'shopify-woo-bridge' ) );
-				return;
-			}
-
-			$api        = new SWB_Shopify_API_Client();
-			$connection = $api->test_connection();
-
-			if ( empty( $connection['success'] ) ) {
-				$message = isset( $connection['message'] ) ? $connection['message'] : __( 'Unknown Shopify connection error.', 'shopify-woo-bridge' );
-				SWB_Logger::error( 'Shopify credentials connection test failed.', array( 'message' => $message ) );
-				WC_Admin_Settings::add_error( sprintf( __( 'Connection failed: %s', 'shopify-woo-bridge' ), $message ) );
-				return;
-			}
-
-			WC_Admin_Settings::add_message( isset( $connection['message'] ) ? $connection['message'] : __( 'Connection successful.', 'shopify-woo-bridge' ) );
+			WC_Admin_Settings::add_message( __( 'Credentials saved. Use "Test connection" to validate access.', 'shopify-woo-bridge' ) );
 		}
 
 		/**
@@ -143,6 +129,34 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 				</th>
 				<td class="forminp">
 					<a href="<?php echo esc_url( $action_url ); ?>" class="button button-primary"><?php esc_html_e( 'Retrieve products and inventory, then export CSV', 'shopify-woo-bridge' ); ?></a>
+					<?php if ( ! empty( $field['desc'] ) ) : ?>
+						<p class="description"><?php echo esc_html( $field['desc'] ); ?></p>
+					<?php endif; ?>
+				</td>
+			</tr>
+			<?php
+		}
+
+		/**
+		 * Render the test connection action field.
+		 *
+		 * @param array $field Field definition.
+		 */
+		public function render_test_connection_action_field( $field ) {
+			$action_url = add_query_arg(
+				array(
+					'action' => 'swb_test_shopify_connection',
+				),
+				admin_url( 'admin-post.php' )
+			);
+			$action_url = wp_nonce_url( $action_url, 'swb_test_shopify_connection', 'swb_test_connection_nonce' );
+			?>
+			<tr>
+				<th scope="row" class="titledesc">
+					<?php echo esc_html( isset( $field['title'] ) ? $field['title'] : __( 'Test connection', 'shopify-woo-bridge' ) ); ?>
+				</th>
+				<td class="forminp">
+					<a href="<?php echo esc_url( $action_url ); ?>" class="button"><?php esc_html_e( 'Test Shopify connection', 'shopify-woo-bridge' ); ?></a>
 					<?php if ( ! empty( $field['desc'] ) ) : ?>
 						<p class="description"><?php echo esc_html( $field['desc'] ); ?></p>
 					<?php endif; ?>
@@ -221,6 +235,12 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 						'custom_attributes' => array(
 							'autocomplete' => 'new-password',
 						),
+					),
+					array(
+						'title' => __( 'Connection check', 'shopify-woo-bridge' ),
+						'type'  => 'swb_test_connection_action',
+						'id'    => 'swb_test_connection_action',
+						'desc'  => __( 'Runs a read-only GET request to Shopify to verify the saved credentials.', 'shopify-woo-bridge' ),
 					),
 					array(
 						'type' => 'sectionend',
