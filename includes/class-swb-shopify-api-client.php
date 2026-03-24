@@ -165,6 +165,51 @@ class SWB_Shopify_API_Client {
 	}
 
 	/**
+	 * Fetch inventory level for a single inventory item ID.
+	 *
+	 * @param string $inventory_item_id The Shopify inventory item ID.
+	 * @return array|WP_Error Array with 'inventory_item_id', 'locations' (array of location stock), or WP_Error.
+	 */
+	public function get_inventory_level_for_item( $inventory_item_id ) {
+		$inventory_item_id = strval( $inventory_item_id );
+		if ( empty( $inventory_item_id ) ) {
+			return new WP_Error( 'swb_invalid_item_id', __( 'Invalid or empty inventory item ID.', 'shopify-woo-bridge' ) );
+		}
+
+		$response = $this->request(
+			'inventory_levels.json',
+			array(
+				'inventory_item_ids' => $inventory_item_id,
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$levels = ! empty( $response['body']['inventory_levels'] ) && is_array( $response['body']['inventory_levels'] )
+			? $response['body']['inventory_levels']
+			: array();
+
+		if ( empty( $levels ) ) {
+			return new WP_Error( 'swb_item_not_found', __( 'Inventory item not found in Shopify.', 'shopify-woo-bridge' ) );
+		}
+
+		$locations = array();
+		foreach ( $levels as $level ) {
+			$locations[] = array(
+				'location_id' => isset( $level['location_id'] ) ? strval( $level['location_id'] ) : '',
+				'available'   => isset( $level['available'] ) ? intval( $level['available'] ) : null,
+			);
+		}
+
+		return array(
+			'inventory_item_id' => $inventory_item_id,
+			'locations'         => $locations,
+		);
+	}
+
+	/**
 	 * Request helper for endpoint + query.
 	 *
 	 * @param string $endpoint Endpoint relative to /admin/api/{version}/.

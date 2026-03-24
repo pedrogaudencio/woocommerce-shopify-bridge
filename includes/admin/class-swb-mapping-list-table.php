@@ -118,12 +118,21 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$id = absint( $this->get_item_value( $item, 'id', 0 ) );
 		$toggle_nonce = wp_create_nonce( 'swb_toggle_mapping_' . $id );
 		$delete_nonce = wp_create_nonce( 'swb_delete_mapping_' . $id );
+		$sync_nonce = wp_create_nonce( 'swb_sync_mapping_' . $id );
 
 		$title = '<strong>' . esc_html( $this->get_item_value( $item, 'shopify_item_id' ) ) . '</strong>';
 		$page  = isset( $_REQUEST['page'] ) ? sanitize_key( $_REQUEST['page'] ) : 'shopify-bridge-mappings';
 		$is_enabled = (int) $this->get_item_value( $item, 'is_enabled', 0 );
 
 		$actions = array(
+			'sync' => sprintf(
+				'<a href="?page=%s&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
+				esc_attr( $page ),
+				'sync',
+				$id,
+				$sync_nonce,
+				__( 'Sync', 'shopify-woo-bridge' )
+			),
 			'toggle' => sprintf(
 				'<a href="?page=%s&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
 				esc_attr( $page ),
@@ -283,9 +292,171 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	}
 
 	/**
+	 * Sync inventory for a specific mapping by fetching from Shopify and updating WooCommerce.
+	 *
+	 * @param object|array $mapping The mapping data.
+	 * @return bool True if sync was successful, false otherwise.
+	 */
+	private function sync_inventory_for_mapping( $mapping ) {
+		$shopify_item_id = $this->get_item_value( $mapping, 'shopify_item_id' );
+		$wc_sku          = $this->get_item_value( $mapping, 'wc_sku' );
+
+		if ( empty( $shopify_item_id ) || empty( $wc_sku ) ) {
+			SWB_Logger::warning( 'Manual sync skipped: Missing shopify_item_id or wc_sku.' );
+			return false;
+		}
+
+		// Fetch inventory levels from Shopify
+		$api            = new SWB_Shopify_API_Client();
+		$levels_by_item = $api->get_inventory_levels_for_item_ids( array( $shopify_item_id ) );
+
+		if ( is_wp_error( $levels_by_item ) ) {
+			SWB_Logger::error( 'Manual sync failed: Could not fetch inventory levels from Shopify.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'error'           => $levels_by_item->get_error_message(),
+			) );
+			return false;
+		}
+
+		if ( empty( $levels_by_item[ $shopify_item_id ] ) ) {
+			SWB_Logger::warning( 'Manual sync skipped: No inventory levels found for item.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+			) );
+			return false;
+		}
+
+		// Use the first available location's inventory (or sum them)
+		$total_available = 0;
+		foreach ( $levels_by_item[ $shopify_item_id ] as $level ) {
+			$total_available += isset( $level['available'] ) ? intval( $level['available'] ) : 0;
+		}
+
+		// Find WooCommerce product by SKU
+		global $wpdb;
+		$product_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"
+				SELECT posts.ID
+				FROM {$wpdb->posts} as posts
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS lookup ON posts.ID = lookup.product_id
+				WHERE
+				posts.post_type IN ( 'product', 'product_variation' )
+				AND posts.post_status != 'trash'
+				AND lookup.sku = %s
+				",
+				$wc_sku
+			)
+		);
+
+		if ( empty( $product_ids ) ) {
+			SWB_Logger::warning( 'Manual sync failed: WooCommerce product with SKU not found.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+			) );
+			return false;
+		}
+
+		if ( count( $product_ids ) > 1 ) {
+			SWB_Logger::error( 'Manual sync failed: Multiple WooCommerce products found with same SKU.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'matching_ids'    => $product_ids,
+			) );
+			return false;
+		}
+
+		$product_id = $product_ids[0];
+		$product    = wc_get_product( $product_id );
+
+		if ( ! $product ) {
+			SWB_Logger::warning( 'Manual sync failed: Could not load WooCommerce product.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'wc_product_id'   => $product_id,
+			) );
+			return false;
+		}
+
+		// Prevent updating parent variable products
+		if ( $product->is_type( 'variable' ) ) {
+			SWB_Logger::error( 'Manual sync failed: Target SKU belongs to a variable product parent. A specific variation SKU is required.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'wc_product_id'   => $product_id,
+			) );
+			return false;
+		}
+
+		// Check if product manages stock
+		if ( ! $product->managing_stock() ) {
+			SWB_Logger::info( 'Manual sync skipped: WooCommerce product is not managing stock.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'wc_product_id'   => $product_id,
+			) );
+			return false;
+		}
+
+		// Update stock
+		$current_stock = $product->get_stock_quantity();
+
+		if ( $current_stock !== $total_available ) {
+			$result = wc_update_product_stock( $product, $total_available, 'set' );
+
+			if ( is_wp_error( $result ) ) {
+				SWB_Logger::error( 'Manual stock update failed.', array(
+					'shopify_item_id' => $shopify_item_id,
+					'wc_sku'          => $wc_sku,
+					'wc_product_id'   => $product_id,
+					'error'           => $result->get_error_message(),
+				) );
+				return false;
+			}
+
+			SWB_Logger::info( 'Manual stock update successful.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'wc_product_id'   => $product_id,
+				'old_stock'       => $current_stock,
+				'new_stock'       => $total_available,
+			) );
+		} else {
+			SWB_Logger::info( 'Manual sync: Stock already up to date.', array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'wc_product_id'   => $product_id,
+				'stock'           => $current_stock,
+			) );
+		}
+
+		return true;
+	}
+
+	/**
 	 * Process bulk action.
 	 */
 	public function process_bulk_action() {
+
+		if ( 'sync' === $this->current_action() ) {
+			// Handle sync action.
+			if ( isset( $_GET['mapping'] ) ) {
+				$mapping_id = absint( $_GET['mapping'] );
+
+				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_sync_mapping_' . $mapping_id ) ) {
+					die( 'Go get a life script kiddies' );
+				}
+
+				$mapping = SWB_DB::get_mapping( $mapping_id );
+				if ( $mapping ) {
+					$this->sync_inventory_for_mapping( $mapping );
+				}
+
+				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings' ) );
+				exit;
+			}
+		}
 
 		if ( 'delete' === $this->current_action() ) {
 			// Handle single delete.

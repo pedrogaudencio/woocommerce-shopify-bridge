@@ -43,6 +43,60 @@ class SWB_REST_Controller extends WP_REST_Controller {
 				),
 			)
 		);
+
+		// GET /shopify-bridge/v1/stock/{inventory_item_id}
+		register_rest_route(
+			$this->namespace,
+			'/stock/(?P<inventory_item_id>[a-zA-Z0-9]+)',
+			array(
+				array(
+					'methods'             => WP_REST_Server::READABLE, // GET
+					'callback'            => array( $this, 'get_inventory_stock' ),
+					'permission_callback' => array( $this, 'verify_api_permission' ),
+					'args'                => array(
+						'inventory_item_id' => array(
+							'description'       => __( 'The Shopify inventory item ID', 'shopify-woo-bridge' ),
+							'type'              => 'string',
+							'required'          => true,
+							'validate_callback' => function ( $param ) {
+								return ! empty( $param );
+							},
+						),
+					),
+				),
+			)
+		);
+
+		// GET /shopify-bridge/v1/stock/{inventory_item_id}/history
+		register_rest_route(
+			$this->namespace,
+			'/stock/(?P<inventory_item_id>[a-zA-Z0-9]+)/history',
+			array(
+				array(
+					'methods'             => WP_REST_Server::READABLE, // GET
+					'callback'            => array( $this, 'get_stock_history' ),
+					'permission_callback' => array( $this, 'verify_api_permission' ),
+					'args'                => array(
+						'inventory_item_id' => array(
+							'description'       => __( 'The Shopify inventory item ID', 'shopify-woo-bridge' ),
+							'type'              => 'string',
+							'required'          => true,
+							'validate_callback' => function ( $param ) {
+								return ! empty( $param );
+							},
+						),
+						'limit'             => array(
+							'description'       => __( 'Number of records to retrieve', 'shopify-woo-bridge' ),
+							'type'              => 'integer',
+							'default'           => 50,
+							'validate_callback' => function ( $param ) {
+								return is_numeric( $param ) && intval( $param ) > 0;
+							},
+						),
+					),
+				),
+			)
+		);
 	}
 
 	/**
@@ -98,6 +152,28 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Verify API permission for GET endpoints.
+	 * Requires either WordPress admin user or valid Shopify request signature.
+	 *
+	 * @param WP_REST_Request $request Full details about the request.
+	 * @return true|WP_Error True if the request has permission, WP_Error object otherwise.
+	 */
+	public function verify_api_permission( $request ) {
+		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
+			// Keep endpoint reachable for operational checks even when sync is disabled.
+			return true;
+		}
+
+		// Allow WordPress administrators.
+		if ( current_user_can( 'manage_woocommerce' ) ) {
+			return true;
+		}
+
+		// Fall back to Shopify signature verification.
+		return $this->verify_shopify_signature( $request );
 	}
 
 	/**
@@ -199,9 +275,38 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			$result = wc_update_product_stock( $target_product, $new_quantity, 'set' );
 
 			if ( is_wp_error( $result ) ) {
-				SWB_Logger::error( 'Stock update failed.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id(), 'error' => $result->get_error_message() ) );
+				$error_message = $result->get_error_message();
+				SWB_Logger::error( 'Stock update failed.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id(), 'error' => $error_message ) );
+				
+				// Log failed update to history.
+				SWB_DB::log_stock_update(
+					array(
+						'shopify_item_id' => $shopify_item_id,
+						'wc_sku'          => $wc_sku,
+						'wc_product_id'   => $target_product->get_id(),
+						'old_stock'       => $current_stock,
+						'new_stock'       => $new_quantity,
+						'source'          => 'webhook',
+						'status'          => 'failed',
+						'error_message'   => $error_message,
+					)
+				);
+				
 				return rest_ensure_response( array( 'status' => 'error', 'reason' => 'stock_update_failed' ) );
 			}
+			
+			// Log successful update to history.
+			SWB_DB::log_stock_update(
+				array(
+					'shopify_item_id' => $shopify_item_id,
+					'wc_sku'          => $wc_sku,
+					'wc_product_id'   => $target_product->get_id(),
+					'old_stock'       => $current_stock,
+					'new_stock'       => $new_quantity,
+					'source'          => 'webhook',
+					'status'          => 'success',
+				)
+			);
 			
 			SWB_Logger::info( 'Stock updated successfully.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id(), 'old_stock' => $current_stock, 'new_stock' => $new_quantity ) );
 			return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_updated', 'new_stock' => $new_quantity ) );
@@ -209,5 +314,212 @@ class SWB_REST_Controller extends WP_REST_Controller {
 
 		SWB_Logger::info( 'Stock update skipped: Quantity is already correct.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id(), 'stock' => $current_stock ) );
 		return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_unchanged', 'new_stock' => $new_quantity ) );
+	}
+
+	/**
+	 * Get inventory stock for a specific Shopify inventory item ID.
+	 *
+	 * @param WP_REST_Request $request Full details about the request.
+	 * @return WP_REST_Response
+	 */
+	public function get_inventory_stock( $request ) {
+		$inventory_item_id = sanitize_text_field( $request['inventory_item_id'] );
+
+		// Check if global sync is enabled.
+		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
+			SWB_Logger::info( 'Stock query ignored: Global sync is disabled.' );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'global_sync_disabled',
+					'message' => __( 'Global sync is currently disabled.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 503 );
+		}
+
+		// Check if the item is mapped.
+		$mapping = SWB_DB::get_mapping_by_shopify_id( $inventory_item_id );
+		if ( ! $mapping ) {
+			SWB_Logger::info( 'Stock query: Item is not mapped.', array( 'shopify_item_id' => $inventory_item_id ) );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'unmapped_item',
+					'message' => __( 'This inventory item is not mapped in the system.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 404 );
+		}
+
+		if ( ! $mapping->is_enabled ) {
+			SWB_Logger::info( 'Stock query: Mapping is disabled.', array( 'shopify_item_id' => $inventory_item_id ) );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'mapping_disabled',
+					'message' => __( 'This mapping is currently disabled.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 403 );
+		}
+
+		// Fetch stock from Shopify API.
+		$client = new SWB_Shopify_API_Client();
+		$response = $client->get_inventory_level_for_item( $inventory_item_id );
+
+		if ( is_wp_error( $response ) ) {
+			$status_code = 'swb_item_not_found' === $response->get_error_code() ? 404 : 500;
+			SWB_Logger::error( 'Failed to fetch inventory from Shopify.', array( 'shopify_item_id' => $inventory_item_id, 'error' => $response->get_error_message() ) );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'shopify_api_error',
+					'code'    => $response->get_error_code(),
+					'message' => $response->get_error_message(),
+				)
+			)->set_status( $status_code );
+		}
+
+		// Get WooCommerce product information.
+		global $wpdb;
+		$product_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"
+				SELECT posts.ID
+				FROM {$wpdb->posts} as posts
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS lookup ON posts.ID = lookup.product_id
+				WHERE
+				posts.post_type IN ( 'product', 'product_variation' )
+				AND posts.post_status != 'trash'
+				AND lookup.sku = %s
+				",
+				$mapping->wc_sku
+			)
+		);
+
+		$wc_product = null;
+		if ( empty( $product_ids ) ) {
+			SWB_Logger::warning( 'Stock query failed: Mapped WooCommerce SKU not found.', array( 'shopify_item_id' => $inventory_item_id, 'wc_sku' => $mapping->wc_sku ) );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'wc_sku_not_found',
+					'message' => __( 'Mapped WooCommerce SKU was not found.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 404 );
+		}
+
+		if ( count( $product_ids ) > 1 ) {
+			SWB_Logger::error( 'Stock query rejected: Multiple WooCommerce products found for mapped SKU.', array( 'shopify_item_id' => $inventory_item_id, 'wc_sku' => $mapping->wc_sku, 'matching_ids' => $product_ids ) );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'duplicate_wc_sku',
+					'message' => __( 'Multiple WooCommerce products share this mapped SKU.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 409 );
+		}
+
+		$wc_product = wc_get_product( $product_ids[0] );
+		if ( ! $wc_product ) {
+			SWB_Logger::warning( 'Stock query failed: Mapped WooCommerce product could not be loaded.', array( 'shopify_item_id' => $inventory_item_id, 'wc_sku' => $mapping->wc_sku, 'wc_product_id' => $product_ids[0] ) );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'wc_product_not_loaded',
+					'message' => __( 'Mapped WooCommerce product could not be loaded.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 500 );
+		}
+
+		$response_data = array(
+			'success'          => true,
+			'inventory_item_id' => $inventory_item_id,
+			'wc_sku'           => $mapping->wc_sku,
+			'shopify'          => $response,
+			'woocommerce'      => array(
+				'sku'   => $mapping->wc_sku,
+				'stock' => $wc_product ? $wc_product->get_stock_quantity() : null,
+			),
+			'mapping'          => array(
+				'id'              => $mapping->id,
+				'enabled'         => (bool) $mapping->is_enabled,
+				'shopify_item_id' => $mapping->shopify_item_id,
+				'wc_sku'          => $mapping->wc_sku,
+			),
+		);
+
+		SWB_Logger::info( 'Stock queried successfully.', array( 'shopify_item_id' => $inventory_item_id ) );
+
+		return rest_ensure_response( $response_data )->set_status( 200 );
+	}
+
+	/**
+	 * Get stock history for a specific Shopify inventory item ID.
+	 *
+	 * @param WP_REST_Request $request Full details about the request.
+	 * @return WP_REST_Response
+	 */
+	public function get_stock_history( $request ) {
+		$inventory_item_id = sanitize_text_field( $request['inventory_item_id'] );
+		$limit             = intval( $request->get_param( 'limit' ) );
+		if ( $limit <= 0 ) {
+			$limit = 50;
+		}
+		$limit = min( $limit, 200 );
+
+		// Check if global sync is enabled.
+		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
+			SWB_Logger::info( 'Stock history query ignored: Global sync is disabled.' );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'global_sync_disabled',
+					'message' => __( 'Global sync is currently disabled.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 503 );
+		}
+
+		// Check if the item is mapped.
+		$mapping = SWB_DB::get_mapping_by_shopify_id( $inventory_item_id );
+		if ( ! $mapping ) {
+			SWB_Logger::info( 'Stock history query: Item is not mapped.', array( 'shopify_item_id' => $inventory_item_id ) );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'unmapped_item',
+					'message' => __( 'This inventory item is not mapped in the system.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 404 );
+		}
+
+		if ( ! $mapping->is_enabled ) {
+			SWB_Logger::info( 'Stock history query: Mapping is disabled.', array( 'shopify_item_id' => $inventory_item_id ) );
+			return rest_ensure_response(
+				array(
+					'success' => false,
+					'error'   => 'mapping_disabled',
+					'message' => __( 'This mapping is currently disabled.', 'shopify-woo-bridge' ),
+				)
+			)->set_status( 403 );
+		}
+
+		// Get stock history from database.
+		$history = SWB_DB::get_stock_history( $inventory_item_id, $limit );
+
+		$response_data = array(
+			'success'          => true,
+			'inventory_item_id' => $inventory_item_id,
+			'wc_sku'           => $mapping->wc_sku,
+			'limit'            => $limit,
+			'count'            => count( $history ),
+			'history'          => $history,
+			'mapping'          => array(
+				'id'      => $mapping->id,
+				'enabled' => (bool) $mapping->is_enabled,
+			),
+		);
+
+		SWB_Logger::info( 'Stock history queried successfully.', array( 'shopify_item_id' => $inventory_item_id, 'records' => count( $history ) ) );
+
+		return rest_ensure_response( $response_data )->set_status( 200 );
 	}
 }

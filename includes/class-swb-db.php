@@ -37,8 +37,29 @@ class SWB_DB {
 			KEY wc_sku (wc_sku)
 		) $charset_collate;";
 
+		// Stock history table for tracking updates.
+		$stock_history_table = $wpdb->prefix . 'swb_stock_history';
+		$stock_sql           = "CREATE TABLE $stock_history_table (
+			id bigint(20) NOT NULL AUTO_INCREMENT,
+			shopify_item_id varchar(255) NOT NULL,
+			wc_sku varchar(255) NOT NULL,
+			wc_product_id bigint(20) DEFAULT NULL,
+			old_stock int(11) DEFAULT NULL,
+			new_stock int(11) NOT NULL,
+			source varchar(50) NOT NULL DEFAULT 'webhook',
+			status varchar(50) NOT NULL DEFAULT 'success',
+			error_message longtext,
+			created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+			PRIMARY KEY  (id),
+			KEY shopify_item_id (shopify_item_id),
+			KEY wc_sku (wc_sku),
+			KEY wc_product_id (wc_product_id),
+			KEY created_at (created_at)
+		) $charset_collate;";
+
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		dbDelta( $sql );
+		dbDelta( $stock_sql );
 	}
 
 	/**
@@ -130,6 +151,19 @@ class SWB_DB {
 			array( 'id' => $id ),
 			array( '%d' )
 		);
+	}
+
+	/**
+	 * Get a mapping by ID.
+	 *
+	 * @param int $id The mapping ID.
+	 * @return object|null Mapping row object or null if not found.
+	 */
+	public static function get_mapping( $id ) {
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'swb_mappings';
+
+		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM $table_name WHERE id = %d LIMIT 1", $id ) );
 	}
 
 	/**
@@ -243,5 +277,81 @@ class SWB_DB {
 		}
 
 		return (int) $wpdb->get_var( $sql );
+	}
+
+	/**
+	 * Log a stock update to history.
+	 *
+	 * @param array $data Stock history data (shopify_item_id, wc_sku, wc_product_id, old_stock, new_stock, source, status, error_message).
+	 * @return int|false The number of rows inserted, or false on error.
+	 */
+	public static function log_stock_update( $data ) {
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'swb_stock_history';
+
+		$defaults = array(
+			'shopify_item_id' => '',
+			'wc_sku'          => '',
+			'wc_product_id'   => null,
+			'old_stock'       => null,
+			'new_stock'       => 0,
+			'source'          => 'webhook',
+			'status'          => 'success',
+			'error_message'   => null,
+		);
+
+		$parsed_args = wp_parse_args( $data, $defaults );
+
+		if ( empty( $parsed_args['shopify_item_id'] ) || empty( $parsed_args['wc_sku'] ) ) {
+			return false;
+		}
+
+		$format = array( '%s', '%s', '%d', '%d', '%d', '%s', '%s', '%s' );
+
+		return $wpdb->insert( $table_name, $parsed_args, $format );
+	}
+
+	/**
+	 * Get stock history for a specific inventory item.
+	 *
+	 * @param string $shopify_item_id The Shopify inventory item ID.
+	 * @param int    $limit Number of records to retrieve.
+	 * @return array Stock history records.
+	 */
+	public static function get_stock_history( $shopify_item_id, $limit = 50 ) {
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'swb_stock_history';
+		$limit      = max( 1, min( 200, absint( $limit ) ) );
+
+		$results = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT * FROM $table_name WHERE shopify_item_id = %s ORDER BY created_at DESC LIMIT %d",
+				$shopify_item_id,
+				$limit
+			),
+			'ARRAY_A'
+		);
+
+		return $results ? $results : array();
+	}
+
+	/**
+	 * Get current stock for a mapped product.
+	 *
+	 * @param string $shopify_item_id The Shopify inventory item ID.
+	 * @return int|null Current stock quantity or null if not found.
+	 */
+	public static function get_current_stock( $shopify_item_id ) {
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'swb_stock_history';
+
+		$result = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT new_stock FROM $table_name WHERE shopify_item_id = %s ORDER BY created_at DESC LIMIT 1",
+				$shopify_item_id
+			)
+		);
+
+		return $result !== null ? intval( $result ) : null;
 	}
 }

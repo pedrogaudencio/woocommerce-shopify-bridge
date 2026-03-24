@@ -30,6 +30,13 @@ class Shopify_WooCommerce_Bridge {
 	const VERSION = '1.0.0';
 
 	/**
+	 * Database schema version.
+	 *
+	 * @var string
+	 */
+	const DB_VERSION = '1.1.0';
+
+	/**
 	 * Single instance of the class.
 	 *
 	 * @var Shopify_WooCommerce_Bridge|null
@@ -135,6 +142,8 @@ class Shopify_WooCommerce_Bridge {
 	 * Executed when plugins are loaded.
 	 */
 	public function on_plugins_loaded() {
+		$this->maybe_upgrade_database();
+
 		// Load text domain for translations.
 		load_plugin_textdomain( 'shopify-woo-bridge', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
 
@@ -168,6 +177,18 @@ class Shopify_WooCommerce_Bridge {
 			if ( class_exists( 'SWB_Admin_Export' ) ) {
 				new SWB_Admin_Export();
 			}
+		}
+	}
+
+	/**
+	 * Ensure custom database tables are up to date for existing installs.
+	 */
+	private function maybe_upgrade_database() {
+		$installed_version = (string) get_option( 'swb_db_version', '1.0.0' );
+
+		if ( version_compare( $installed_version, self::DB_VERSION, '<' ) ) {
+			SWB_DB::create_tables();
+			update_option( 'swb_db_version', self::DB_VERSION, false );
 		}
 	}
 
@@ -225,6 +246,7 @@ class Shopify_WooCommerce_Bridge {
 		// Create database tables.
 		require_once SWB_PLUGIN_DIR . 'includes/class-swb-db.php';
 		SWB_DB::create_tables();
+		update_option( 'swb_db_version', self::DB_VERSION, false );
 	}
 
 	/**
