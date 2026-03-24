@@ -36,6 +36,13 @@ class SWB_Image_Sync {
 	const LAST_MEDIA_SYNCED_AT_META = 'shopify_sync_last_media_synced_at';
 
 	/**
+	 * Last local media signature meta key.
+	 *
+	 * @var string
+	 */
+	const LAST_MEDIA_SIGNATURE_META = 'shopify_sync_last_media_signature';
+
+	/**
 	 * Sync images for one mapping row (product group + mapped variations).
 	 *
 	 * @param object|array $mapping Mapping row.
@@ -78,6 +85,11 @@ class SWB_Image_Sync {
 				'changed' => false,
 				'message' => $shopify_product->get_error_message(),
 			);
+		}
+
+		$full_images = $api->get_product_images( $shopify_product_id );
+		if ( ! is_wp_error( $full_images ) && ! empty( $full_images ) ) {
+			$shopify_product['images'] = $full_images;
 		}
 
 		$image_map = $this->build_shopify_image_map( $shopify_product );
@@ -258,6 +270,9 @@ class SWB_Image_Sync {
 		update_post_meta( $parent_id, self::LAST_MEDIA_HASH_META, $new_hash );
 		update_post_meta( $parent_id, self::LAST_MEDIA_SYNCED_AT_META, gmdate( 'Y-m-d H:i:s' ) );
 
+		$local_signature = $this->build_parent_local_signature( $featured_attachment_id, $gallery_without_featured );
+		update_post_meta( $parent_id, self::LAST_MEDIA_SIGNATURE_META, $local_signature );
+
 		return array(
 			'success' => true,
 			'changed' => true,
@@ -343,8 +358,11 @@ class SWB_Image_Sync {
 				$wc_product->save();
 			}
 
+			$current_variation_image_id = absint( $wc_product->get_image_id() );
+
 			update_post_meta( $wc_product_id, self::LAST_MEDIA_HASH_META, $new_hash );
 			update_post_meta( $wc_product_id, self::LAST_MEDIA_SYNCED_AT_META, gmdate( 'Y-m-d H:i:s' ) );
+			update_post_meta( $wc_product_id, self::LAST_MEDIA_SIGNATURE_META, $this->build_variation_local_signature( $current_variation_image_id ) );
 			$changed_any = true;
 		}
 
@@ -499,6 +517,36 @@ class SWB_Image_Sync {
 		);
 
 		return absint( $attachment_id );
+	}
+
+	/**
+	 * Build local signature for parent media assignment.
+	 *
+	 * @param int   $featured_attachment_id Featured attachment ID.
+	 * @param array $gallery_attachment_ids Gallery attachment IDs.
+	 * @return string
+	 */
+	private function build_parent_local_signature( $featured_attachment_id, $gallery_attachment_ids ) {
+		$payload = array(
+			'featured' => absint( $featured_attachment_id ),
+			'gallery'  => array_map( 'absint', array_values( (array) $gallery_attachment_ids ) ),
+		);
+
+		return md5( wp_json_encode( $payload ) );
+	}
+
+	/**
+	 * Build local signature for variation image assignment.
+	 *
+	 * @param int $image_id Attachment ID.
+	 * @return string
+	 */
+	private function build_variation_local_signature( $image_id ) {
+		$payload = array(
+			'image_id' => absint( $image_id ),
+		);
+
+		return md5( wp_json_encode( $payload ) );
 	}
 
 	/**

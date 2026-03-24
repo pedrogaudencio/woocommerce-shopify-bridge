@@ -190,6 +190,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$delete_nonce = wp_create_nonce( 'swb_delete_mapping_' . $id );
 		$sync_nonce = wp_create_nonce( 'swb_sync_mapping_' . $id );
 		$sync_images_nonce = wp_create_nonce( 'swb_sync_images_mapping_' . $id );
+		$reset_media_nonce = wp_create_nonce( 'swb_reset_media_status_' . $id );
 
 		$title = '<strong>' . esc_html( $this->get_item_value( $item, 'shopify_item_id' ) ) . '</strong>';
 		$page  = isset( $_REQUEST['page'] ) ? sanitize_key( $_REQUEST['page'] ) : 'shopify-bridge-mappings';
@@ -254,6 +255,25 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				),
 				$is_enabled ? __( 'Disable', 'shopify-woo-bridge' ) : __( 'Enable', 'shopify-woo-bridge' )
 			),
+			'reset_media_status' => sprintf(
+				'<a href="%s">%s</a>',
+				esc_url(
+					add_query_arg(
+						array_merge(
+							array(
+								'page'     => $page,
+								'tab'      => 'mappings',
+								'action'   => 'reset_media_status',
+								'mapping'  => $id,
+								'_wpnonce' => $reset_media_nonce,
+							),
+							$state_args
+						),
+						admin_url( 'admin.php' )
+					)
+				),
+				__( 'Reset Media Status', 'shopify-woo-bridge' )
+			),
 			'delete' => sprintf(
 				'<a href="%s">%s</a>',
 				esc_url(
@@ -299,17 +319,35 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			return esc_html__( 'Not synced', 'shopify-woo-bridge' );
 		}
 
-		$last_synced = (string) get_post_meta( $product_id, 'shopify_sync_last_media_synced_at', true );
-		$last_hash   = (string) get_post_meta( $product_id, 'shopify_sync_last_media_hash', true );
+		$product      = wc_get_product( $product_id );
+		$last_synced  = (string) get_post_meta( $product_id, 'shopify_sync_last_media_synced_at', true );
+		$last_hash    = (string) get_post_meta( $product_id, 'shopify_sync_last_media_hash', true );
+		$last_sig     = (string) get_post_meta( $product_id, 'shopify_sync_last_media_signature', true );
+		$current_sig  = $this->build_current_local_media_signature( $product );
 
 		$mapping_id  = absint( $this->get_item_value( $item, 'id', 0 ) );
 		$error       = (string) get_option( 'swb_mapping_media_sync_error_' . $mapping_id, '' );
 		$last_result = (string) get_option( 'swb_mapping_media_sync_result_' . $mapping_id, '' );
 
+		if ( 'invalidated' === $last_result ) {
+			$status = '<strong style="color:#b32d2e;">' . esc_html__( 'Invalidated', 'shopify-woo-bridge' ) . '</strong>';
+			if ( '' !== $error ) {
+				$status .= '<br/><small style="color:#b32d2e;">' . esc_html( $error ) . '</small>';
+			} else {
+				$status .= '<br/><small>' . esc_html__( 'Status was reset manually.', 'shopify-woo-bridge' ) . '</small>';
+			}
+
+			return $status;
+		}
+
 		if ( '' === $last_synced ) {
 			$status = esc_html__( 'Not synced', 'shopify-woo-bridge' );
 		} else {
 			$status = esc_html__( 'Synced', 'shopify-woo-bridge' ) . ': ' . esc_html( $last_synced );
+		}
+
+		if ( '' !== $last_synced && '' !== $last_sig && '' !== $current_sig && ! hash_equals( $last_sig, $current_sig ) ) {
+			return '<strong style="color:#b32d2e;">' . esc_html__( 'Invalidated', 'shopify-woo-bridge' ) . '</strong><br/><small>' . esc_html__( 'Media changed since the last sync.', 'shopify-woo-bridge' ) . '</small>';
 		}
 
 		if ( '' !== $last_result ) {
@@ -325,6 +363,34 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		}
 
 		return $status;
+	}
+
+	/**
+	 * Build local media signature from current WooCommerce assignment.
+	 *
+	 * @param WC_Product|false $product Product object.
+	 * @return string
+	 */
+	private function build_current_local_media_signature( $product ) {
+		if ( ! $product ) {
+			return '';
+		}
+
+		if ( $product->is_type( 'variation' ) ) {
+			$payload = array(
+				'image_id' => absint( $product->get_image_id() ),
+			);
+
+			return md5( wp_json_encode( $payload ) );
+		}
+
+		$gallery_ids = array_map( 'absint', array_values( (array) $product->get_gallery_image_ids() ) );
+		$payload     = array(
+			'featured' => absint( $product->get_image_id() ),
+			'gallery'  => $gallery_ids,
+		);
+
+		return md5( wp_json_encode( $payload ) );
 	}
 
 	/**
@@ -458,6 +524,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 */
 	public function get_bulk_actions() {
 		$actions = array(
+			'bulk-reset-media-status' => __( 'Reset Media Status', 'shopify-woo-bridge' ),
 			'bulk-delete' => 'Delete',
 		);
 
@@ -646,6 +713,105 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	public function process_bulk_action() {
 		$state_args = self::get_preserved_state_query_args();
 
+		if ( 'reset_media_status' === $this->current_action() ) {
+			if ( isset( $_GET['mapping'] ) ) {
+				$mapping_id = absint( $_GET['mapping'] );
+
+				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_reset_media_status_' . $mapping_id ) ) {
+					die( 'Go get a life script kiddies' );
+				}
+
+				$mapping = SWB_DB::get_mapping( $mapping_id );
+				if ( ! $mapping ) {
+					wp_safe_redirect(
+						add_query_arg(
+							array_merge(
+								array(
+									'page'        => 'shopify-bridge-mappings',
+									'tab'         => 'mappings',
+									'swb_notice'  => '1',
+									'swb_type'    => 'error',
+									'swb_message' => __( 'Mapping not found.', 'shopify-woo-bridge' ),
+								),
+								$state_args
+							),
+							admin_url( 'admin.php' )
+						)
+					);
+					exit;
+				}
+
+				$this->reset_media_sync_status_for_mapping( $mapping );
+
+				wp_safe_redirect(
+					add_query_arg(
+						array_merge(
+							array(
+								'page'        => 'shopify-bridge-mappings',
+								'tab'         => 'mappings',
+								'swb_notice'  => '1',
+								'swb_type'    => 'success',
+								'swb_message' => __( 'Media sync status reset and invalidated.', 'shopify-woo-bridge' ),
+							),
+							$state_args
+						),
+						admin_url( 'admin.php' )
+					)
+				);
+				exit;
+			}
+		}
+
+		if ( ( isset( $_POST['action'] ) && 'bulk-reset-media-status' === $_POST['action'] )
+			|| ( isset( $_POST['action2'] ) && 'bulk-reset-media-status' === $_POST['action2'] )
+		) {
+			if ( ! wp_verify_nonce( $_POST['_wpnonce'], 'bulk-' . $this->_args['plural'] ) ) {
+				die( 'Go get a life script kiddies' );
+			}
+
+			$mapping_ids = isset( $_POST['bulk-delete'] ) ? array_map( 'absint', (array) $_POST['bulk-delete'] ) : array();
+			$mapping_ids = array_values( array_filter( $mapping_ids ) );
+
+			$processed = 0;
+			$failed    = 0;
+
+			foreach ( $mapping_ids as $mapping_id ) {
+				$mapping = SWB_DB::get_mapping( $mapping_id );
+				if ( ! $mapping ) {
+					$failed++;
+					continue;
+				}
+
+				$this->reset_media_sync_status_for_mapping( $mapping );
+				$processed++;
+			}
+
+			$notice_type = $failed > 0 ? 'error' : 'success';
+			$message     = sprintf(
+				/* translators: 1: processed count, 2: failed count. */
+				__( 'Bulk reset complete. Reset: %1$d, Failed: %2$d.', 'shopify-woo-bridge' ),
+				$processed,
+				$failed
+			);
+
+			wp_safe_redirect(
+				add_query_arg(
+					array_merge(
+						array(
+							'page'        => 'shopify-bridge-mappings',
+							'tab'         => 'mappings',
+							'swb_notice'  => '1',
+							'swb_type'    => $notice_type,
+							'swb_message' => $message,
+						),
+						$state_args
+					),
+					admin_url( 'admin.php' )
+				)
+			);
+			exit;
+		}
+
 		if ( 'sync_images' === $this->current_action() ) {
 			if ( isset( $_GET['mapping'] ) ) {
 				$mapping_id = absint( $_GET['mapping'] );
@@ -799,5 +965,28 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		}
 
 		update_option( 'swb_mapping_media_sync_error_' . $mapping_id, sanitize_text_field( $error_message ) );
+	}
+
+	/**
+	 * Reset and invalidate media sync status for one mapping row.
+	 *
+	 * @param object|array $mapping Mapping row.
+	 */
+	private function reset_media_sync_status_for_mapping( $mapping ) {
+		$mapping_id = absint( $this->get_item_value( $mapping, 'id', 0 ) );
+		if ( $mapping_id <= 0 ) {
+			return;
+		}
+
+		$wc_sku     = (string) $this->get_item_value( $mapping, 'wc_sku', '' );
+		$product_id = $this->find_wc_product_id_by_sku_for_status( $wc_sku );
+
+		if ( $product_id > 0 ) {
+			delete_post_meta( $product_id, 'shopify_sync_last_media_hash' );
+			delete_post_meta( $product_id, 'shopify_sync_last_media_synced_at' );
+			delete_post_meta( $product_id, 'shopify_sync_last_media_signature' );
+		}
+
+		$this->set_media_sync_status( $mapping_id, 'invalidated', '' );
 	}
 }

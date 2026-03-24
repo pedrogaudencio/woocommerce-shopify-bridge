@@ -134,6 +134,35 @@ class SWB_Shopify_API_Client {
 	}
 
 	/**
+	 * Fetch full Shopify product image list.
+	 *
+	 * @param string $shopify_product_id Shopify product ID.
+	 * @return array|WP_Error
+	 */
+	public function get_product_images( $shopify_product_id ) {
+		$shopify_product_id = trim( (string) $shopify_product_id );
+		if ( '' === $shopify_product_id ) {
+			return new WP_Error( 'swb_invalid_product_id', __( 'Invalid Shopify product ID.', 'shopify-woo-bridge' ) );
+		}
+
+		$response = $this->request(
+			'products/' . rawurlencode( $shopify_product_id ) . '/images.json',
+			array(
+				'limit'  => 250,
+				'fields' => 'id,src,variant_ids',
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$images = isset( $response['body']['images'] ) && is_array( $response['body']['images'] ) ? $response['body']['images'] : array();
+
+		return $images;
+	}
+
+	/**
 	 * Fetch inventory levels by inventory item IDs.
 	 *
 	 * @param array $inventory_item_ids Inventory item IDs.
