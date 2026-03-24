@@ -377,8 +377,16 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		}
 
 		if ( $product->is_type( 'variation' ) ) {
+			$variation_gallery_raw = (string) get_post_meta( $product->get_id(), '_product_image_gallery', true );
+			$variation_gallery_ids = array_values(
+				array_filter(
+					array_map( 'absint', explode( ',', $variation_gallery_raw ) )
+				)
+			);
+
 			$payload = array(
 				'image_id' => absint( $product->get_image_id() ),
+				'gallery'  => $variation_gallery_ids,
 			);
 
 			return md5( wp_json_encode( $payload ) );

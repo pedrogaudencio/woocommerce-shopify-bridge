@@ -43,13 +43,19 @@ class SWB_Image_Sync {
 	const LAST_MEDIA_SIGNATURE_META = 'shopify_sync_last_media_signature';
 
 	/**
-	 * Sync images for one mapping row (product group + mapped variations).
+	 * Sync images for one mapping row (single product or single variation).
+	 *
+	 * NOTE: This method syncs a SINGLE mapping row only, not a group of rows.
+	 * This prevents the issue where variations with different shopify_product_id values
+	 * would overwrite each other's images.
 	 *
 	 * @param object|array $mapping Mapping row.
 	 * @return array
 	 */
 	public function sync_images_for_mapping( $mapping ) {
 		$shopify_product_id = $this->get_mapping_value( $mapping, 'shopify_product_id' );
+		$shopify_variant_id = $this->get_mapping_value( $mapping, 'shopify_variant_id' );
+		$wc_sku             = $this->get_mapping_value( $mapping, 'wc_sku' );
 		$is_enabled         = (int) $this->get_mapping_value( $mapping, 'is_enabled', 0 );
 
 		if ( '' === $shopify_product_id ) {
@@ -68,12 +74,11 @@ class SWB_Image_Sync {
 			);
 		}
 
-		$group_mappings = SWB_DB::get_mappings_by_shopify_product_id( $shopify_product_id );
-		if ( empty( $group_mappings ) ) {
+		if ( '' === $wc_sku ) {
 			return array(
 				'success' => false,
 				'changed' => false,
-				'message' => __( 'No mappings found for this Shopify Product ID.', 'shopify-woo-bridge' ),
+				'message' => __( 'Mapping is missing WooCommerce SKU.', 'shopify-woo-bridge' ),
 			);
 		}
 
@@ -93,35 +98,71 @@ class SWB_Image_Sync {
 		}
 
 		$image_map = $this->build_shopify_image_map( $shopify_product );
-		$parent_id = $this->resolve_parent_product_id_from_group( $group_mappings );
 
-		if ( $parent_id <= 0 ) {
+		// Find the WooCommerce product by SKU.
+		$wc_product_id = $this->find_wc_product_id_by_sku( $wc_sku );
+		if ( is_wp_error( $wc_product_id ) ) {
 			return array(
 				'success' => false,
 				'changed' => false,
-				'message' => __( 'Could not resolve a WooCommerce parent product from mapped SKUs.', 'shopify-woo-bridge' ),
+				'message' => sprintf( __( 'WooCommerce product not found: %s', 'shopify-woo-bridge' ), $wc_product_id->get_error_message() ),
 			);
 		}
 
-		$parent_result    = $this->sync_parent_gallery( $parent_id, $shopify_product_id, $image_map );
-		$variation_result = $this->sync_mapped_variations( $group_mappings, $shopify_product_id, $shopify_product, $image_map );
+		$wc_product = wc_get_product( $wc_product_id );
+		if ( ! $wc_product ) {
+			return array(
+				'success' => false,
+				'changed' => false,
+				'message' => __( 'Could not load WooCommerce product.', 'shopify-woo-bridge' ),
+			);
+		}
 
-		$success = $parent_result['success'] && $variation_result['success'];
-		$changed = $parent_result['changed'] || $variation_result['changed'];
+		// Determine if this is a variation or simple/variable parent product.
+		$is_variation = $wc_product->is_type( 'variation' );
 
-		if ( ! $success ) {
-			$message_parts = array();
-			if ( ! empty( $parent_result['message'] ) ) {
-				$message_parts[] = $parent_result['message'];
+		// Variation mappings must provide an explicit Shopify variant ID.
+		if ( $is_variation && '' === trim( (string) $shopify_variant_id ) ) {
+			return array(
+				'success' => false,
+				'changed' => false,
+				'message' => __( 'Missing shopify_variant_id for variation mapping.', 'shopify-woo-bridge' ),
+			);
+		}
+
+		$changed       = false;
+		$error_message = '';
+
+		if ( $is_variation ) {
+			// Variation mappings are isolated: sync only this variation image.
+			$variation_result = $this->sync_single_variation( $wc_product_id, $shopify_product_id, $shopify_variant_id, $shopify_product, $image_map );
+			if ( ! $variation_result['success'] ) {
+				$error_message = $variation_result['message'];
 			}
-			if ( ! empty( $variation_result['message'] ) ) {
-				$message_parts[] = $variation_result['message'];
+			$changed = $variation_result['changed'];
+		} else {
+			$parent_id = $wc_product->get_id();
+			if ( $parent_id <= 0 ) {
+				return array(
+					'success' => false,
+					'changed' => false,
+					'message' => __( 'Could not resolve parent product.', 'shopify-woo-bridge' ),
+				);
 			}
 
+			// Parent/simple mappings sync the parent featured image and gallery.
+			$parent_result = $this->sync_parent_gallery( $parent_id, $shopify_product_id, $image_map );
+			if ( ! $parent_result['success'] ) {
+				$error_message = $parent_result['message'];
+			}
+			$changed = $parent_result['changed'];
+		}
+
+		if ( ! empty( $error_message ) ) {
 			return array(
 				'success' => false,
 				'changed' => $changed,
-				'message' => implode( ' ', array_filter( $message_parts ) ),
+				'message' => $error_message,
 			);
 		}
 
@@ -154,6 +195,7 @@ class SWB_Image_Sync {
 		foreach ( $images as $image ) {
 			$image_id = isset( $image['id'] ) ? strval( $image['id'] ) : '';
 			$src      = isset( $image['src'] ) ? esc_url_raw( $image['src'] ) : '';
+			$variant_ids = isset( $image['variant_ids'] ) && is_array( $image['variant_ids'] ) ? array_map( 'strval', $image['variant_ids'] ) : array();
 			if ( '' === $image_id || '' === $src ) {
 				continue;
 			}
@@ -162,6 +204,7 @@ class SWB_Image_Sync {
 			$ordered[]                = array(
 				'id'  => $image_id,
 				'src' => $src,
+				'variant_ids' => $variant_ids,
 			);
 		}
 
@@ -272,6 +315,143 @@ class SWB_Image_Sync {
 
 		$local_signature = $this->build_parent_local_signature( $featured_attachment_id, $gallery_without_featured );
 		update_post_meta( $parent_id, self::LAST_MEDIA_SIGNATURE_META, $local_signature );
+
+		return array(
+			'success' => true,
+			'changed' => true,
+			'message' => '',
+		);
+	}
+
+	/**
+	 * Sync image for a single variation.
+	 *
+	 * @param int    $variation_id WooCommerce variation product ID.
+	 * @param string $shopify_product_id Shopify product ID that owns this variant.
+	 * @param string $shopify_variant_id Shopify variant ID.
+	 * @param array  $shopify_product Shopify product payload.
+	 * @param array  $image_map Shopify image map.
+	 * @return array
+	 */
+	private function sync_single_variation( $variation_id, $shopify_product_id, $shopify_variant_id, $shopify_product, $image_map ) {
+		$variants      = isset( $shopify_product['variants'] ) && is_array( $shopify_product['variants'] ) ? $shopify_product['variants'] : array();
+		$variant_by_id = array();
+
+		// Build map of variant IDs to variant data.
+		foreach ( $variants as $variant ) {
+			$variant_id = isset( $variant['id'] ) ? strval( $variant['id'] ) : '';
+			if ( '' !== $variant_id ) {
+				$variant_by_id[ $variant_id ] = $variant;
+			}
+		}
+
+		$shopify_variant = isset( $variant_by_id[ $shopify_variant_id ] ) ? $variant_by_id[ $shopify_variant_id ] : null;
+		if ( ! $shopify_variant || ! is_array( $shopify_variant ) ) {
+			return array(
+				'success' => false,
+				'changed' => false,
+				'message' => sprintf( __( 'Shopify variant %s not found in product payload.', 'shopify-woo-bridge' ), $shopify_variant_id ),
+			);
+		}
+
+		// Determine the variant image to use.
+		$variant_image_id  = isset( $shopify_variant['image_id'] ) ? strval( $shopify_variant['image_id'] ) : '';
+		$variant_image_src = ( '' !== $variant_image_id && isset( $image_map['image_by_id'][ $variant_image_id ] ) ) ? $image_map['image_by_id'][ $variant_image_id ] : '';
+
+		$variation_gallery_sources = array();
+		foreach ( $image_map['ordered'] as $gallery_item ) {
+			$src = isset( $gallery_item['src'] ) ? (string) $gallery_item['src'] : '';
+			if ( '' === $src ) {
+				continue;
+			}
+
+			$variant_ids = isset( $gallery_item['variant_ids'] ) && is_array( $gallery_item['variant_ids'] ) ? array_map( 'strval', $gallery_item['variant_ids'] ) : array();
+			if ( empty( $variant_ids ) || in_array( (string) $shopify_variant_id, $variant_ids, true ) ) {
+				$variation_gallery_sources[] = $src;
+			}
+		}
+
+		$variation_gallery_sources = array_values( array_unique( array_filter( $variation_gallery_sources ) ) );
+
+		$primary_variation_src = '';
+		if ( '' !== $variant_image_src ) {
+			$primary_variation_src = $variant_image_src;
+		} elseif ( ! empty( $variation_gallery_sources ) ) {
+			$primary_variation_src = (string) $variation_gallery_sources[0];
+		}
+
+		$variation_gallery_sources = array_values(
+			array_filter(
+				$variation_gallery_sources,
+				function( $src ) use ( $primary_variation_src ) {
+					return '' !== (string) $src && (string) $src !== (string) $primary_variation_src;
+				}
+			)
+		);
+
+		// Build hash for idempotency.
+		$variant_hash_payload = array(
+			'shopify_product_id' => (string) $shopify_product_id,
+			'shopify_variant_id' => (string) $shopify_variant_id,
+			'image_id'           => (string) $variant_image_id,
+			'image_src'          => (string) $primary_variation_src,
+			'gallery_sources'    => $variation_gallery_sources,
+		);
+
+		$new_hash  = md5( wp_json_encode( $variant_hash_payload ) );
+		$last_hash = (string) get_post_meta( $variation_id, self::LAST_MEDIA_HASH_META, true );
+		
+		// If hash matches, no changes needed.
+		if ( '' !== $last_hash && hash_equals( $last_hash, $new_hash ) ) {
+			return array(
+				'success' => true,
+				'changed' => false,
+				'message' => '',
+			);
+		}
+
+		$attachment_id = 0;
+		if ( '' !== $primary_variation_src ) {
+			// Import or reuse the variation's primary image.
+			$attachment_id = $this->import_or_get_attachment_id( $primary_variation_src, $variation_id );
+			if ( is_wp_error( $attachment_id ) ) {
+				return array(
+					'success' => false,
+					'changed' => false,
+					'message' => sprintf( __( 'Variation image sync failed: %s', 'shopify-woo-bridge' ), $attachment_id->get_error_message() ),
+				);
+			}
+		}
+
+		$variation_gallery_attachment_ids = array();
+		foreach ( $variation_gallery_sources as $gallery_src ) {
+			$gallery_attachment_id = $this->import_or_get_attachment_id( $gallery_src, $variation_id );
+			if ( is_wp_error( $gallery_attachment_id ) ) {
+				return array(
+					'success' => false,
+					'changed' => false,
+					'message' => sprintf( __( 'Variation gallery sync failed: %s', 'shopify-woo-bridge' ), $gallery_attachment_id->get_error_message() ),
+				);
+			}
+
+			$variation_gallery_attachment_ids[] = absint( $gallery_attachment_id );
+		}
+
+		$variation_gallery_attachment_ids = array_values( array_unique( array_filter( $variation_gallery_attachment_ids ) ) );
+		update_post_meta( $variation_id, '_product_image_gallery', implode( ',', array_map( 'absint', $variation_gallery_attachment_ids ) ) );
+
+		// Assign the image to the variation.
+		$wc_product = wc_get_product( $variation_id );
+		if ( $attachment_id > 0 && $wc_product && $wc_product->is_type( 'variation' ) ) {
+			$wc_product->set_image_id( absint( $attachment_id ) );
+			$wc_product->save();
+		}
+
+		// Update tracking metadata.
+		$current_variation_image_id = absint( $wc_product ? $wc_product->get_image_id() : 0 );
+		update_post_meta( $variation_id, self::LAST_MEDIA_HASH_META, $new_hash );
+		update_post_meta( $variation_id, self::LAST_MEDIA_SYNCED_AT_META, gmdate( 'Y-m-d H:i:s' ) );
+		update_post_meta( $variation_id, self::LAST_MEDIA_SIGNATURE_META, $this->build_variation_local_signature( $current_variation_image_id, $variation_gallery_attachment_ids ) );
 
 		return array(
 			'success' => true,
@@ -541,9 +721,10 @@ class SWB_Image_Sync {
 	 * @param int $image_id Attachment ID.
 	 * @return string
 	 */
-	private function build_variation_local_signature( $image_id ) {
+	private function build_variation_local_signature( $image_id, $gallery_attachment_ids = array() ) {
 		$payload = array(
 			'image_id' => absint( $image_id ),
+			'gallery'  => array_map( 'absint', array_values( (array) $gallery_attachment_ids ) ),
 		);
 
 		return md5( wp_json_encode( $payload ) );

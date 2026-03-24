@@ -27,6 +27,7 @@ class SWB_Admin_Mappings {
 	public function __construct() {
 		add_action( 'admin_menu', array( $this, 'add_plugin_page' ) );
 		add_action( 'admin_init', array( $this, 'handle_add_mapping' ) );
+		add_action( 'admin_init', array( $this, 'handle_sync_images_action' ) );
 		add_action( 'admin_init', array( $this, 'handle_fetch_all_shopify_ids' ) );
 		add_action( 'admin_init', array( $this, 'handle_bulk_sync_images' ) );
 		add_action( 'admin_init', array( $this, 'handle_settings_save' ) );
@@ -528,6 +529,93 @@ class SWB_Admin_Mappings {
 
 		wp_safe_redirect( $redirect_url );
 		exit;
+	}
+
+	/**
+	 * Handle individual "Sync Images" action for a single mapping row.
+	 *
+	 * Triggered when user clicks "Sync Images" link on a mapping row.
+	 * GET parameters: action=sync_images, mapping=<id>, _wpnonce=<nonce>
+	 */
+	public function handle_sync_images_action() {
+		if ( ! isset( $_GET['action'], $_GET['mapping'] ) ) {
+			return;
+		}
+
+		$action = sanitize_key( wp_unslash( $_GET['action'] ) );
+		if ( 'sync_images' !== $action ) {
+			return;
+		}
+
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_die( 'Unauthorized.' );
+		}
+
+		$mapping_id = absint( $_GET['mapping'] );
+		if ( $mapping_id <= 0 ) {
+			return;
+		}
+
+		if ( ! isset( $_GET['_wpnonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ), 'swb_sync_images_mapping_' . $mapping_id ) ) {
+			wp_die( 'Security check failed.' );
+		}
+
+		// Get the mapping row.
+		$mapping = SWB_DB::get_mapping( $mapping_id );
+		if ( ! $mapping ) {
+			$this->redirect_with_notice( 'error', __( 'Mapping not found.', 'shopify-woo-bridge' ) );
+			exit;
+		}
+
+		// Sync images for this single mapping.
+		$sync_service = new SWB_Image_Sync();
+		$result       = $sync_service->sync_images_for_mapping( $mapping );
+
+		// Update status for this mapping.
+		if ( ! empty( $result['success'] ) ) {
+			if ( ! empty( $result['changed'] ) ) {
+				$status = 'changed';
+				$notice_message = __( 'Images synced successfully.', 'shopify-woo-bridge' );
+			} else {
+				$status = 'unchanged';
+				$notice_message = __( 'Images already in sync (no media changes detected).', 'shopify-woo-bridge' );
+			}
+			$this->set_mapping_media_sync_status( $mapping_id, $status, '' );
+		} else {
+			$status          = 'error';
+			$error_message   = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
+			$notice_message  = $error_message;
+			$this->set_mapping_media_sync_status( $mapping_id, $status, $error_message );
+		}
+
+		// Redirect back to mappings page with notice.
+		$notice_type = 'error' === $status ? 'error' : 'success';
+		$this->redirect_with_notice( $notice_type, $notice_message );
+		exit;
+	}
+
+	/**
+	 * Redirect to mappings page with a notice message.
+	 *
+	 * @param string $type 'success' or 'error'.
+	 * @param string $message Notice message.
+	 */
+	private function redirect_with_notice( $type, $message ) {
+		$redirect_args = array(
+			'page'        => 'shopify-bridge-mappings',
+			'tab'         => 'mappings',
+			'swb_notice'  => '1',
+			'swb_type'    => $type,
+			'swb_message' => $message,
+		);
+
+		$state_args = isset( $_GET['swb_product_type'] ) ? array( 'swb_product_type' => sanitize_key( wp_unslash( $_GET['swb_product_type'] ) ) ) : array();
+		if ( ! empty( $state_args ) ) {
+			$redirect_args = array_merge( $redirect_args, $state_args );
+		}
+
+		$redirect_url = add_query_arg( $redirect_args, admin_url( 'admin.php' ) );
+		wp_safe_redirect( $redirect_url );
 	}
 
 	/**
