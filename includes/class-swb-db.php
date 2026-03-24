@@ -244,20 +244,32 @@ class SWB_DB {
 	 * @param string $search Search query.
 	 * @return array Mappings.
 	 */
-	public static function get_mappings( $per_page = 20, $page_number = 1, $search = '' ) {
+	public static function get_mappings( $per_page = 20, $page_number = 1, $search = '', $product_type = 'all' ) {
 		global $wpdb;
 		$table_name = $wpdb->prefix . 'swb_mappings';
 
-		$sql = "SELECT * FROM {$table_name}";
-		
-		$args = array();
+		$sql         = "SELECT * FROM {$table_name} AS m";
+		$args        = array();
+		$where_parts = array();
 
 		if ( ! empty( $search ) ) {
-			$sql .= ' WHERE shopify_item_id LIKE %s';
-			$args[] = '%' . $wpdb->esc_like( $search ) . '%';
+			$where_parts[] = 'm.shopify_item_id LIKE %s';
+			$args[]        = '%' . $wpdb->esc_like( $search ) . '%';
 		}
 
-		$sql .= ' ORDER BY id DESC';
+		$product_type_where = self::get_product_type_where_clause( $product_type, 'm.wc_sku' );
+		if ( ! empty( $product_type_where ) ) {
+			$where_parts[] = $product_type_where;
+			if ( in_array( $product_type, array( 'variable', 'grouped', 'external' ), true ) ) {
+				$args[] = $product_type;
+			}
+		}
+
+		if ( ! empty( $where_parts ) ) {
+			$sql .= ' WHERE ' . implode( ' AND ', $where_parts );
+		}
+
+		$sql .= ' ORDER BY m.id DESC';
 
 		$sql .= ' LIMIT %d OFFSET %d';
 		$args[] = $per_page;
@@ -277,21 +289,91 @@ class SWB_DB {
 	 * @param string $search Search query.
 	 * @return int Total count.
 	 */
-	public static function get_mappings_count( $search = '' ) {
+	public static function get_mappings_count( $search = '', $product_type = 'all' ) {
 		global $wpdb;
 		$table_name = $wpdb->prefix . 'swb_mappings';
 
-		$sql = "SELECT COUNT(*) FROM {$table_name}";
-		
-		$args = array();
+		$sql         = "SELECT COUNT(*) FROM {$table_name} AS m";
+		$args        = array();
+		$where_parts = array();
 
 		if ( ! empty( $search ) ) {
-			$sql .= ' WHERE shopify_item_id LIKE %s';
-			$args[] = '%' . $wpdb->esc_like( $search ) . '%';
+			$where_parts[] = 'm.shopify_item_id LIKE %s';
+			$args[]        = '%' . $wpdb->esc_like( $search ) . '%';
+		}
+
+		$product_type_where = self::get_product_type_where_clause( $product_type, 'm.wc_sku' );
+		if ( ! empty( $product_type_where ) ) {
+			$where_parts[] = $product_type_where;
+			if ( in_array( $product_type, array( 'variable', 'grouped', 'external' ), true ) ) {
+				$args[] = $product_type;
+			}
+		}
+
+		if ( ! empty( $where_parts ) ) {
+			$sql .= ' WHERE ' . implode( ' AND ', $where_parts );
+		}
+
+		if ( ! empty( $args ) ) {
 			$sql = $wpdb->prepare( $sql, $args );
 		}
 
 		return (int) $wpdb->get_var( $sql );
+	}
+
+	/**
+	 * Build WHERE clause for WooCommerce product type filtering by mapped SKU.
+	 *
+	 * @param string $product_type Product type filter.
+	 * @param string $sku_reference SQL reference to SKU column.
+	 * @return string
+	 */
+	private static function get_product_type_where_clause( $product_type, $sku_reference ) {
+		global $wpdb;
+
+		$allowed = array( 'all', 'simple', 'variable', 'variation', 'grouped', 'external' );
+		if ( ! in_array( $product_type, $allowed, true ) || 'all' === $product_type ) {
+			return '';
+		}
+
+		if ( 'variation' === $product_type ) {
+			return "EXISTS (
+				SELECT 1
+				FROM {$wpdb->posts} AS p
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS l ON p.ID = l.product_id
+				WHERE p.post_type = 'product_variation'
+				AND p.post_status != 'trash'
+				AND l.sku = {$sku_reference}
+			)";
+		}
+
+		if ( 'simple' === $product_type ) {
+			return "EXISTS (
+				SELECT 1
+				FROM {$wpdb->posts} AS p
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS l ON p.ID = l.product_id
+				LEFT JOIN {$wpdb->term_relationships} AS tr ON tr.object_id = p.ID
+				LEFT JOIN {$wpdb->term_taxonomy} AS tt ON tt.term_taxonomy_id = tr.term_taxonomy_id AND tt.taxonomy = 'product_type'
+				LEFT JOIN {$wpdb->terms} AS t ON t.term_id = tt.term_id
+				WHERE p.post_type = 'product'
+				AND p.post_status != 'trash'
+				AND l.sku = {$sku_reference}
+				AND (t.slug = 'simple' OR t.slug IS NULL)
+			)";
+		}
+
+		return "EXISTS (
+			SELECT 1
+			FROM {$wpdb->posts} AS p
+			INNER JOIN {$wpdb->wc_product_meta_lookup} AS l ON p.ID = l.product_id
+			INNER JOIN {$wpdb->term_relationships} AS tr ON tr.object_id = p.ID
+			INNER JOIN {$wpdb->term_taxonomy} AS tt ON tt.term_taxonomy_id = tr.term_taxonomy_id AND tt.taxonomy = 'product_type'
+			INNER JOIN {$wpdb->terms} AS t ON t.term_id = tt.term_id
+			WHERE p.post_type = 'product'
+			AND p.post_status != 'trash'
+			AND l.sku = {$sku_reference}
+			AND t.slug = %s
+		)";
 	}
 
 	/**

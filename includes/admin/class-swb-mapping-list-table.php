@@ -60,8 +60,9 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return mixed
 	 */
 	public static function get_mappings( $per_page = 20, $page_number = 1 ) {
-		$search = isset( $_REQUEST['s'] ) ? sanitize_text_field( $_REQUEST['s'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		return SWB_DB::get_mappings( $per_page, $page_number, $search );
+		$search       = isset( $_REQUEST['s'] ) ? sanitize_text_field( $_REQUEST['s'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$product_type = self::get_product_type_filter();
+		return SWB_DB::get_mappings( $per_page, $page_number, $search, $product_type );
 	}
 
 	/**
@@ -70,8 +71,75 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return null|string
 	 */
 	public static function record_count() {
-		$search = isset( $_REQUEST['s'] ) ? sanitize_text_field( $_REQUEST['s'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		return SWB_DB::get_mappings_count( $search );
+		$search       = isset( $_REQUEST['s'] ) ? sanitize_text_field( $_REQUEST['s'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$product_type = self::get_product_type_filter();
+		return SWB_DB::get_mappings_count( $search, $product_type );
+	}
+
+	/**
+	 * Read product type filter from request.
+	 *
+	 * @return string
+	 */
+	private static function get_product_type_filter() {
+		$allowed = array( 'all', 'simple', 'variable', 'variation', 'grouped', 'external' );
+		$value   = isset( $_REQUEST['swb_product_type'] ) ? sanitize_key( $_REQUEST['swb_product_type'] ) : 'all'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+		if ( ! in_array( $value, $allowed, true ) ) {
+			return 'all';
+		}
+
+		return $value;
+	}
+
+	/**
+	 * Build query args that preserve current list-table state.
+	 *
+	 * @return array
+	 */
+	private static function get_preserved_state_query_args() {
+		$args = array();
+
+		$product_type = self::get_product_type_filter();
+		if ( 'all' !== $product_type ) {
+			$args['swb_product_type'] = $product_type;
+		}
+
+		if ( isset( $_REQUEST['s'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$search = sanitize_text_field( wp_unslash( $_REQUEST['s'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			if ( '' !== $search ) {
+				$args['s'] = $search;
+			}
+		}
+
+		return $args;
+	}
+
+	/**
+	 * Render extra controls above the table.
+	 *
+	 * @param string $which top|bottom.
+	 */
+	protected function extra_tablenav( $which ) {
+		if ( 'top' !== $which ) {
+			return;
+		}
+
+		$current_filter = self::get_product_type_filter();
+		?>
+		<div class="alignleft actions">
+			<label class="screen-reader-text" for="swb-product-type-filter"><?php esc_html_e( 'Filter by product type', 'shopify-woo-bridge' ); ?></label>
+			<select name="swb_product_type" id="swb-product-type-filter">
+				<option value="all" <?php selected( $current_filter, 'all' ); ?>><?php esc_html_e( 'All product types', 'shopify-woo-bridge' ); ?></option>
+				<option value="simple" <?php selected( $current_filter, 'simple' ); ?>><?php esc_html_e( 'Simple', 'shopify-woo-bridge' ); ?></option>
+				<option value="variable" <?php selected( $current_filter, 'variable' ); ?>><?php esc_html_e( 'Variable', 'shopify-woo-bridge' ); ?></option>
+				<option value="variation" <?php selected( $current_filter, 'variation' ); ?>><?php esc_html_e( 'Variation', 'shopify-woo-bridge' ); ?></option>
+				<option value="grouped" <?php selected( $current_filter, 'grouped' ); ?>><?php esc_html_e( 'Grouped', 'shopify-woo-bridge' ); ?></option>
+				<option value="external" <?php selected( $current_filter, 'external' ); ?>><?php esc_html_e( 'External/Affiliate', 'shopify-woo-bridge' ); ?></option>
+			</select>
+			<?php submit_button( __( 'Filter', 'shopify-woo-bridge' ), 'button', 'filter_action', false ); ?>
+		</div>
+		<?php
 	}
 
 	/**
@@ -127,37 +195,82 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$page  = isset( $_REQUEST['page'] ) ? sanitize_key( $_REQUEST['page'] ) : 'shopify-bridge-mappings';
 		$is_enabled = (int) $this->get_item_value( $item, 'is_enabled', 0 );
 
+		$state_args = self::get_preserved_state_query_args();
 		$actions = array(
 			'sync' => sprintf(
-				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
-				esc_attr( $page ),
-				'sync',
-				$id,
-				$sync_nonce,
+				'<a href="%s">%s</a>',
+				esc_url(
+					add_query_arg(
+						array_merge(
+							array(
+								'page'     => $page,
+								'tab'      => 'mappings',
+								'action'   => 'sync',
+								'mapping'  => $id,
+								'_wpnonce' => $sync_nonce,
+							),
+							$state_args
+						),
+						admin_url( 'admin.php' )
+					)
+				),
 				__( 'Sync', 'shopify-woo-bridge' )
 			),
 			'sync_images' => sprintf(
-				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
-				esc_attr( $page ),
-				'sync_images',
-				$id,
-				$sync_images_nonce,
+				'<a href="%s">%s</a>',
+				esc_url(
+					add_query_arg(
+						array_merge(
+							array(
+								'page'     => $page,
+								'tab'      => 'mappings',
+								'action'   => 'sync_images',
+								'mapping'  => $id,
+								'_wpnonce' => $sync_images_nonce,
+							),
+							$state_args
+						),
+						admin_url( 'admin.php' )
+					)
+				),
 				__( 'Sync Images', 'shopify-woo-bridge' )
 			),
 			'toggle' => sprintf(
-				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
-				esc_attr( $page ),
-				'toggle',
-				$id,
-				$toggle_nonce,
+				'<a href="%s">%s</a>',
+				esc_url(
+					add_query_arg(
+						array_merge(
+							array(
+								'page'     => $page,
+								'tab'      => 'mappings',
+								'action'   => 'toggle',
+								'mapping'  => $id,
+								'_wpnonce' => $toggle_nonce,
+							),
+							$state_args
+						),
+						admin_url( 'admin.php' )
+					)
+				),
 				$is_enabled ? __( 'Disable', 'shopify-woo-bridge' ) : __( 'Enable', 'shopify-woo-bridge' )
 			),
 			'delete' => sprintf(
-				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
-				esc_attr( $page ),
-				'delete',
-				$id,
-				$delete_nonce,
+				'<a href="%s">%s</a>',
+				esc_url(
+					add_query_arg(
+						array_merge(
+							array(
+								'page'     => $page,
+								'tab'      => 'mappings',
+								'action'   => 'delete',
+								'mapping'  => $id,
+								'_wpnonce' => $delete_nonce,
+							),
+							$state_args
+						),
+						admin_url( 'admin.php' )
+					)
+				),
 				__( 'Delete', 'shopify-woo-bridge' )
 			),
 		);
@@ -531,6 +644,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * Process bulk action.
 	 */
 	public function process_bulk_action() {
+		$state_args = self::get_preserved_state_query_args();
 
 		if ( 'sync_images' === $this->current_action() ) {
 			if ( isset( $_GET['mapping'] ) ) {
@@ -545,12 +659,15 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 					$this->set_media_sync_status( $mapping_id, 'error', __( 'Mapping not found.', 'shopify-woo-bridge' ) );
 					wp_safe_redirect(
 						add_query_arg(
-							array(
+							array_merge(
+								array(
 								'page'        => 'shopify-bridge-mappings',
 								'tab'         => 'mappings',
 								'swb_notice'  => '1',
 								'swb_type'    => 'error',
 								'swb_message' => __( 'Mapping not found.', 'shopify-woo-bridge' ),
+								),
+								$state_args
 							),
 							admin_url( 'admin.php' )
 						)
@@ -573,12 +690,15 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 				wp_safe_redirect(
 					add_query_arg(
-						array(
+						array_merge(
+							array(
 							'page'        => 'shopify-bridge-mappings',
 							'tab'         => 'mappings',
 							'swb_notice'  => '1',
 							'swb_type'    => $type,
 							'swb_message' => $message,
+							),
+							$state_args
 						),
 						admin_url( 'admin.php' )
 					)
@@ -601,7 +721,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 					$this->sync_inventory_for_mapping( $mapping );
 				}
 
-				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
+				wp_safe_redirect( add_query_arg( array_merge( array( 'page' => 'shopify-bridge-mappings', 'tab' => 'mappings' ), $state_args ), admin_url( 'admin.php' ) ) );
 				exit;
 			}
 		}
@@ -618,7 +738,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				SWB_DB::delete_mapping( $mapping_id );
 
 				// redirect to avoid resubmission
-				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
+				wp_safe_redirect( add_query_arg( array_merge( array( 'page' => 'shopify-bridge-mappings', 'tab' => 'mappings' ), $state_args ), admin_url( 'admin.php' ) ) );
 				exit;
 			}
 		}
@@ -634,7 +754,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 				SWB_DB::toggle_mapping( $mapping_id );
 
-				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
+				wp_safe_redirect( add_query_arg( array_merge( array( 'page' => 'shopify-bridge-mappings', 'tab' => 'mappings' ), $state_args ), admin_url( 'admin.php' ) ) );
 				exit;
 			}
 		}
@@ -653,7 +773,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				SWB_DB::delete_mapping( absint( $id ) );
 			}
 
-			wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
+			wp_safe_redirect( add_query_arg( array_merge( array( 'page' => 'shopify-bridge-mappings', 'tab' => 'mappings' ), $state_args ), admin_url( 'admin.php' ) ) );
 			exit;
 		}
 	}

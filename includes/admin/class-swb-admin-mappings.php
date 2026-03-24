@@ -83,13 +83,15 @@ class SWB_Admin_Mappings {
 
 		$mapping_table = new SWB_Mapping_List_Table();
 		$mapping_table->prepare_items();
-		$page_slug = isset( $_REQUEST['page'] ) ? sanitize_key( $_REQUEST['page'] ) : 'shopify-bridge-mappings';
+		$page_slug            = isset( $_REQUEST['page'] ) ? sanitize_key( $_REQUEST['page'] ) : 'shopify-bridge-mappings';
+		$current_product_type = $this->normalize_product_type_filter( isset( $_REQUEST['swb_product_type'] ) ? sanitize_key( wp_unslash( $_REQUEST['swb_product_type'] ) ) : 'all' );
 		?>
 		<div style="margin-bottom: 12px;">
 			<form method="post" action="" style="display: inline-block;">
 				<?php wp_nonce_field( 'swb_fetch_all_shopify_ids_action', 'swb_fetch_all_shopify_ids_nonce' ); ?>
 				<input type="hidden" name="page" value="shopify-bridge-mappings" />
 				<input type="hidden" name="tab" value="mappings" />
+				<input type="hidden" name="swb_product_type" value="<?php echo esc_attr( $current_product_type ); ?>" />
 				<input type="hidden" name="swb_fetch_all_shopify_ids" value="1" />
 				<?php submit_button( __( 'Fetch all Shopify IDs from products', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
 			</form>
@@ -97,6 +99,7 @@ class SWB_Admin_Mappings {
 				<?php wp_nonce_field( 'swb_bulk_sync_images_action', 'swb_bulk_sync_images_nonce' ); ?>
 				<input type="hidden" name="page" value="shopify-bridge-mappings" />
 				<input type="hidden" name="tab" value="mappings" />
+				<input type="hidden" name="swb_product_type" value="<?php echo esc_attr( $current_product_type ); ?>" />
 				<input type="hidden" name="swb_bulk_sync_images" value="1" />
 				<?php submit_button( __( 'Sync Images for all eligible mappings', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
 			</form>
@@ -390,14 +393,22 @@ class SWB_Admin_Mappings {
 			$failed_count
 		);
 
+		$current_product_type = $this->normalize_product_type_filter( isset( $_POST['swb_product_type'] ) ? sanitize_key( wp_unslash( $_POST['swb_product_type'] ) ) : 'all' );
+
+		$redirect_args = array(
+			'page'        => 'shopify-bridge-mappings',
+			'tab'         => 'mappings',
+			'swb_notice'  => '1',
+			'swb_type'    => $notice_type,
+			'swb_message' => $message,
+		);
+
+		if ( 'all' !== $current_product_type ) {
+			$redirect_args['swb_product_type'] = $current_product_type;
+		}
+
 		$redirect_url = add_query_arg(
-			array(
-				'page'        => 'shopify-bridge-mappings',
-				'tab'         => 'mappings',
-				'swb_notice'  => '1',
-				'swb_type'    => $notice_type,
-				'swb_message' => $message,
-			),
+			$redirect_args,
 			admin_url( 'admin.php' )
 		);
 
@@ -420,6 +431,8 @@ class SWB_Admin_Mappings {
 		if ( ! isset( $_POST['swb_bulk_sync_images_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['swb_bulk_sync_images_nonce'] ) ), 'swb_bulk_sync_images_action' ) ) {
 			wp_die( 'Security check failed.' );
 		}
+
+		$current_product_type = $this->normalize_product_type_filter( isset( $_POST['swb_product_type'] ) ? sanitize_key( wp_unslash( $_POST['swb_product_type'] ) ) : 'all' );
 
 		global $wpdb;
 		$table_name = $wpdb->prefix . 'swb_mappings';
@@ -444,10 +457,15 @@ class SWB_Admin_Mappings {
 
 		foreach ( $rows as $row ) {
 			$shopify_product_id = isset( $row->shopify_product_id ) ? trim( (string) $row->shopify_product_id ) : '';
+			$wc_sku             = isset( $row->wc_sku ) ? trim( (string) $row->wc_sku ) : '';
 
 			if ( '' === $shopify_product_id ) {
 				$this->set_mapping_media_sync_status( absint( $row->id ), 'error', __( 'Missing Shopify Product ID.', 'shopify-woo-bridge' ) );
 				$skipped_groups++;
+				continue;
+			}
+
+			if ( 'all' !== $current_product_type && ! $this->is_wc_sku_matching_product_type( $wc_sku, $current_product_type ) ) {
 				continue;
 			}
 
@@ -458,7 +476,7 @@ class SWB_Admin_Mappings {
 			$seen_products[ $shopify_product_id ] = true;
 			$processed_groups++;
 
-			$result = $sync_service->sync_images_for_mapping( $row );
+			$result     = $sync_service->sync_images_for_mapping( $row );
 			$group_rows = SWB_DB::get_mappings_by_shopify_product_id( $shopify_product_id );
 
 			if ( ! empty( $result['success'] ) ) {
@@ -494,19 +512,88 @@ class SWB_Admin_Mappings {
 			$skipped_groups
 		);
 
-		$redirect_url = add_query_arg(
-			array(
-				'page'        => 'shopify-bridge-mappings',
-				'tab'         => 'mappings',
-				'swb_notice'  => '1',
-				'swb_type'    => $notice_type,
-				'swb_message' => $message,
-			),
-			admin_url( 'admin.php' )
+		$redirect_args = array(
+			'page'        => 'shopify-bridge-mappings',
+			'tab'         => 'mappings',
+			'swb_notice'  => '1',
+			'swb_type'    => $notice_type,
+			'swb_message' => $message,
 		);
+
+		if ( 'all' !== $current_product_type ) {
+			$redirect_args['swb_product_type'] = $current_product_type;
+		}
+
+		$redirect_url = add_query_arg( $redirect_args, admin_url( 'admin.php' ) );
 
 		wp_safe_redirect( $redirect_url );
 		exit;
+	}
+
+	/**
+	 * Normalize product type filter.
+	 *
+	 * @param string $product_type Product type.
+	 * @return string
+	 */
+	private function normalize_product_type_filter( $product_type ) {
+		$allowed = array( 'all', 'simple', 'variable', 'variation', 'grouped', 'external' );
+		if ( ! in_array( $product_type, $allowed, true ) ) {
+			return 'all';
+		}
+
+		return $product_type;
+	}
+
+	/**
+	 * Check whether a SKU belongs to the selected product type.
+	 *
+	 * @param string $wc_sku WooCommerce SKU.
+	 * @param string $product_type Product type filter.
+	 * @return bool
+	 */
+	private function is_wc_sku_matching_product_type( $wc_sku, $product_type ) {
+		$product_type = $this->normalize_product_type_filter( $product_type );
+		if ( 'all' === $product_type ) {
+			return true;
+		}
+
+		if ( '' === trim( (string) $wc_sku ) ) {
+			return false;
+		}
+
+		global $wpdb;
+		$product_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"
+				SELECT posts.ID
+				FROM {$wpdb->posts} as posts
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS lookup ON posts.ID = lookup.product_id
+				WHERE
+				posts.post_type IN ( 'product', 'product_variation' )
+				AND posts.post_status != 'trash'
+				AND lookup.sku = %s
+				",
+				$wc_sku
+			)
+		);
+
+		if ( empty( $product_ids ) ) {
+			return false;
+		}
+
+		foreach ( $product_ids as $product_id ) {
+			$product = wc_get_product( $product_id );
+			if ( ! $product ) {
+				continue;
+			}
+
+			if ( $product->is_type( $product_type ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
