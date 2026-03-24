@@ -88,6 +88,8 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			case 'wc_sku':
 			case 'created_at':
 				return esc_html( $this->get_item_value( $item, $column_name ) );
+			case 'media_sync_status':
+				return $this->column_media_sync_status( $item );
 			case 'is_enabled':
 				return (int) $this->get_item_value( $item, $column_name, 0 ) ? __( 'Yes', 'shopify-woo-bridge' ) : __( 'No', 'shopify-woo-bridge' );
 			default:
@@ -119,6 +121,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$toggle_nonce = wp_create_nonce( 'swb_toggle_mapping_' . $id );
 		$delete_nonce = wp_create_nonce( 'swb_delete_mapping_' . $id );
 		$sync_nonce = wp_create_nonce( 'swb_sync_mapping_' . $id );
+		$sync_images_nonce = wp_create_nonce( 'swb_sync_images_mapping_' . $id );
 
 		$title = '<strong>' . esc_html( $this->get_item_value( $item, 'shopify_item_id' ) ) . '</strong>';
 		$page  = isset( $_REQUEST['page'] ) ? sanitize_key( $_REQUEST['page'] ) : 'shopify-bridge-mappings';
@@ -132,6 +135,14 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				$id,
 				$sync_nonce,
 				__( 'Sync', 'shopify-woo-bridge' )
+			),
+			'sync_images' => sprintf(
+				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
+				esc_attr( $page ),
+				'sync_images',
+				$id,
+				$sync_images_nonce,
+				__( 'Sync Images', 'shopify-woo-bridge' )
 			),
 			'toggle' => sprintf(
 				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
@@ -151,7 +162,88 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			),
 		);
 
+		if ( ! $is_enabled || '' === (string) $this->get_item_value( $item, 'shopify_product_id', '' ) ) {
+			unset( $actions['sync_images'] );
+		}
+
 		return $title . $this->row_actions( $actions );
+	}
+
+	/**
+	 * Render image sync status column.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return string
+	 */
+	public function column_media_sync_status( $item ) {
+		$wc_sku = (string) $this->get_item_value( $item, 'wc_sku', '' );
+		if ( '' === $wc_sku ) {
+			return esc_html__( 'Not available', 'shopify-woo-bridge' );
+		}
+
+		$product_id = $this->find_wc_product_id_by_sku_for_status( $wc_sku );
+		if ( $product_id <= 0 ) {
+			return esc_html__( 'Not synced', 'shopify-woo-bridge' );
+		}
+
+		$last_synced = (string) get_post_meta( $product_id, 'shopify_sync_last_media_synced_at', true );
+		$last_hash   = (string) get_post_meta( $product_id, 'shopify_sync_last_media_hash', true );
+
+		$mapping_id  = absint( $this->get_item_value( $item, 'id', 0 ) );
+		$error       = (string) get_option( 'swb_mapping_media_sync_error_' . $mapping_id, '' );
+		$last_result = (string) get_option( 'swb_mapping_media_sync_result_' . $mapping_id, '' );
+
+		if ( '' === $last_synced ) {
+			$status = esc_html__( 'Not synced', 'shopify-woo-bridge' );
+		} else {
+			$status = esc_html__( 'Synced', 'shopify-woo-bridge' ) . ': ' . esc_html( $last_synced );
+		}
+
+		if ( '' !== $last_result ) {
+			$status .= '<br/><small>' . esc_html( ucfirst( $last_result ) ) . '</small>';
+		}
+
+		if ( '' !== $last_hash ) {
+			$status .= '<br/><small>' . esc_html__( 'Hash stored', 'shopify-woo-bridge' ) . '</small>';
+		}
+
+		if ( '' !== $error ) {
+			$status .= '<br/><small style="color:#b32d2e;">' . esc_html( $error ) . '</small>';
+		}
+
+		return $status;
+	}
+
+	/**
+	 * Resolve product ID by SKU for status rendering.
+	 *
+	 * @param string $wc_sku SKU.
+	 * @return int
+	 */
+	private function find_wc_product_id_by_sku_for_status( $wc_sku ) {
+		global $wpdb;
+
+		$product_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"
+				SELECT posts.ID
+				FROM {$wpdb->posts} as posts
+				INNER JOIN {$wpdb->wc_product_meta_lookup} AS lookup ON posts.ID = lookup.product_id
+				WHERE
+				posts.post_type IN ( 'product', 'product_variation' )
+				AND posts.post_status != 'trash'
+				AND lookup.sku = %s
+				LIMIT 1
+				",
+				$wc_sku
+			)
+		);
+
+		if ( empty( $product_ids ) ) {
+			return 0;
+		}
+
+		return absint( $product_ids[0] );
 	}
 
 	/**
@@ -229,6 +321,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			'shopify_item_id'    => __( 'Shopify Inventory ID', 'shopify-woo-bridge' ),
 			'shopify_product_id' => __( 'Shopify Product/Variant ID', 'shopify-woo-bridge' ),
 			'wc_sku'             => __( 'WooCommerce SKU', 'shopify-woo-bridge' ),
+			'media_sync_status'  => __( 'Media Sync Status', 'shopify-woo-bridge' ),
 			'is_enabled'         => __( 'Sync Enabled', 'shopify-woo-bridge' ),
 			'created_at'         => __( 'Mapped On', 'shopify-woo-bridge' ),
 		);
@@ -439,6 +532,61 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 */
 	public function process_bulk_action() {
 
+		if ( 'sync_images' === $this->current_action() ) {
+			if ( isset( $_GET['mapping'] ) ) {
+				$mapping_id = absint( $_GET['mapping'] );
+
+				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_sync_images_mapping_' . $mapping_id ) ) {
+					die( 'Go get a life script kiddies' );
+				}
+
+				$mapping = SWB_DB::get_mapping( $mapping_id );
+				if ( ! $mapping ) {
+					$this->set_media_sync_status( $mapping_id, 'error', __( 'Mapping not found.', 'shopify-woo-bridge' ) );
+					wp_safe_redirect(
+						add_query_arg(
+							array(
+								'page'        => 'shopify-bridge-mappings',
+								'tab'         => 'mappings',
+								'swb_notice'  => '1',
+								'swb_type'    => 'error',
+								'swb_message' => __( 'Mapping not found.', 'shopify-woo-bridge' ),
+							),
+							admin_url( 'admin.php' )
+						)
+					);
+					exit;
+				}
+
+				$sync_service = new SWB_Image_Sync();
+				$result       = $sync_service->sync_images_for_mapping( $mapping );
+
+				if ( ! empty( $result['success'] ) ) {
+					$this->set_media_sync_status( $mapping_id, ! empty( $result['changed'] ) ? 'changed' : 'unchanged', '' );
+					$type    = 'success';
+					$message = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync completed.', 'shopify-woo-bridge' );
+				} else {
+					$message = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
+					$this->set_media_sync_status( $mapping_id, 'error', $message );
+					$type = 'error';
+				}
+
+				wp_safe_redirect(
+					add_query_arg(
+						array(
+							'page'        => 'shopify-bridge-mappings',
+							'tab'         => 'mappings',
+							'swb_notice'  => '1',
+							'swb_type'    => $type,
+							'swb_message' => $message,
+						),
+						admin_url( 'admin.php' )
+					)
+				);
+				exit;
+			}
+		}
+
 		if ( 'sync' === $this->current_action() ) {
 			// Handle sync action.
 			if ( isset( $_GET['mapping'] ) ) {
@@ -508,5 +656,28 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
 			exit;
 		}
+	}
+
+	/**
+	 * Persist last media sync result/error for mapping row status display.
+	 *
+	 * @param int    $mapping_id Mapping ID.
+	 * @param string $result changed|unchanged|error.
+	 * @param string $error_message Error message.
+	 */
+	private function set_media_sync_status( $mapping_id, $result, $error_message ) {
+		$mapping_id = absint( $mapping_id );
+		if ( $mapping_id <= 0 ) {
+			return;
+		}
+
+		update_option( 'swb_mapping_media_sync_result_' . $mapping_id, sanitize_key( $result ) );
+
+		if ( '' === trim( (string) $error_message ) ) {
+			delete_option( 'swb_mapping_media_sync_error_' . $mapping_id );
+			return;
+		}
+
+		update_option( 'swb_mapping_media_sync_error_' . $mapping_id, sanitize_text_field( $error_message ) );
 	}
 }

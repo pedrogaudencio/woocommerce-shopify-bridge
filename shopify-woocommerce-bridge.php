@@ -89,6 +89,9 @@ class Shopify_WooCommerce_Bridge {
 		// Shopify API read-only client.
 		require_once SWB_PLUGIN_DIR . 'includes/class-swb-shopify-api-client.php';
 
+		// Shopify image sync service.
+		require_once SWB_PLUGIN_DIR . 'includes/class-swb-image-sync.php';
+
 		// Admin classes.
 		if ( is_admin() ) {
 			require_once SWB_PLUGIN_DIR . 'includes/admin/class-swb-admin-mappings.php';

@@ -193,6 +193,21 @@ class SWB_DB {
 	}
 
 	/**
+	 * Get mappings by Shopify Product ID.
+	 *
+	 * @param string $shopify_product_id Shopify Product ID.
+	 * @return array
+	 */
+	public static function get_mappings_by_shopify_product_id( $shopify_product_id ) {
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'swb_mappings';
+
+		return $wpdb->get_results(
+			$wpdb->prepare( "SELECT * FROM $table_name WHERE shopify_product_id = %s ORDER BY id ASC", $shopify_product_id )
+		);
+	}
+
+	/**
 	 * Toggle mapping status.
 	 *
 	 * @param int $id Mapping ID.
