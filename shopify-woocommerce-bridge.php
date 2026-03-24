@@ -108,11 +108,6 @@ class Shopify_WooCommerce_Bridge {
 		register_activation_hook( __FILE__, array( 'Shopify_WooCommerce_Bridge', 'activate' ) );
 		register_deactivation_hook( __FILE__, array( 'Shopify_WooCommerce_Bridge', 'deactivate' ) );
 
-		// Hook into WC settings.
-		if ( is_admin() ) {
-			add_filter( 'woocommerce_get_settings_pages', array( $this, 'add_settings_page' ) );
-		}
-
 		// Register REST API.
 		add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
 	}
@@ -125,18 +120,6 @@ class Shopify_WooCommerce_Bridge {
 		$controller->register_routes();
 	}
 
-	/**
-	 * Add settings page.
-	 *
-	 * @param array $settings WC settings pages.
-	 * @return array
-	 */
-	public function add_settings_page( $settings ) {
-		if ( class_exists( 'SWB_Admin_Settings' ) ) {
-			$settings[] = new SWB_Admin_Settings();
-		}
-		return $settings;
-	}
 
 	/**
 	 * Executed when plugins are loaded.

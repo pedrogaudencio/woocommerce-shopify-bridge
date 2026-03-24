@@ -282,8 +282,8 @@ class SWB_Admin_Export {
 			);
 		}
 
-		$stored_notice     = $this->consume_next_notice();
-		$is_settings_screen = isset( $_GET['page'], $_GET['tab'] ) && 'wc-settings' === $_GET['page'] && in_array( $_GET['tab'], array( 'shopify_bridge', 'integration' ), true );
+		$stored_notice      = $this->consume_next_notice();
+		$is_settings_screen = isset( $_GET['page'], $_GET['tab'] ) && 'shopify-bridge-mappings' === $_GET['page'] && in_array( $_GET['tab'], array( 'general', 'credentials', 'export' ), true );
 		if ( $is_settings_screen && ! empty( $stored_notice ) ) {
 			$notices[] = $stored_notice;
 		}
@@ -365,7 +365,7 @@ class SWB_Admin_Export {
 	 * @return string
 	 */
 	private function get_settings_return_url() {
-		return admin_url( 'admin.php?page=wc-settings&tab=shopify_bridge' );
+		return admin_url( 'admin.php?page=shopify-bridge-mappings&tab=export' );
 	}
 
 	/**

@@ -53,6 +53,18 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 		}
 
 		/**
+		 * Output settings fields for an explicit section.
+		 *
+		 * @param string $section Settings section.
+		 */
+		public function output_for_section( $section ) {
+			global $current_section;
+			$current_section = (string) $section;
+
+			$this->output();
+		}
+
+		/**
 		 * Save settings.
 		 */
 		public function save() {
@@ -65,6 +77,18 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 
 			$settings = $this->get_settings( $current_section );
 			WC_Admin_Settings::save_fields( $settings );
+		}
+
+		/**
+		 * Save settings for an explicit section.
+		 *
+		 * @param string $section Settings section.
+		 */
+		public function save_for_section( $section ) {
+			global $current_section;
+			$current_section = (string) $section;
+
+			$this->save();
 		}
 
 		/**

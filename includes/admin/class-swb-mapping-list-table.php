@@ -126,7 +126,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 		$actions = array(
 			'sync' => sprintf(
-				'<a href="?page=%s&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
+				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
 				esc_attr( $page ),
 				'sync',
 				$id,
@@ -134,7 +134,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				__( 'Sync', 'shopify-woo-bridge' )
 			),
 			'toggle' => sprintf(
-				'<a href="?page=%s&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
+				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
 				esc_attr( $page ),
 				'toggle',
 				$id,
@@ -142,7 +142,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				$is_enabled ? __( 'Disable', 'shopify-woo-bridge' ) : __( 'Enable', 'shopify-woo-bridge' )
 			),
 			'delete' => sprintf(
-				'<a href="?page=%s&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
+				'<a href="?page=%s&tab=mappings&action=%s&mapping=%s&_wpnonce=%s">%s</a>',
 				esc_attr( $page ),
 				'delete',
 				$id,
@@ -453,7 +453,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 					$this->sync_inventory_for_mapping( $mapping );
 				}
 
-				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings' ) );
+				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
 				exit;
 			}
 		}
@@ -470,7 +470,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				SWB_DB::delete_mapping( $mapping_id );
 
 				// redirect to avoid resubmission
-				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings' ) );
+				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
 				exit;
 			}
 		}
@@ -486,7 +486,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 				SWB_DB::toggle_mapping( $mapping_id );
 
-				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings' ) );
+				wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
 				exit;
 			}
 		}
@@ -505,7 +505,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				SWB_DB::delete_mapping( absint( $id ) );
 			}
 
-			wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings' ) );
+			wp_safe_redirect( admin_url( 'admin.php?page=shopify-bridge-mappings&tab=mappings' ) );
 			exit;
 		}
 	}
