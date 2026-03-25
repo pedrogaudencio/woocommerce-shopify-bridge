@@ -471,10 +471,23 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$product = wc_get_product( $product_id );
 
 		if ( $product ) {
-			$title = $product->get_name();
-			$edit_url = get_edit_post_link( $product_id );
-			$type_label = $product->is_type('variation') ? __( 'Variation', 'shopify-woo-bridge' ) : __( 'Product', 'shopify-woo-bridge' );
-			return sprintf( '<strong>%s</strong><br><a href="%s">%s (ID: %d - %s)</a>', $wc_sku, esc_url( $edit_url ), esc_html( $title ), $product_id, $type_label );
+			$title        = $product->get_name();
+			$edit_post_id = absint( $product_id );
+			if ( $product->is_type( 'variation' ) ) {
+				$parent_id = absint( $product->get_parent_id() );
+				if ( $parent_id > 0 ) {
+					$edit_post_id = $parent_id;
+				}
+			}
+			$edit_url = add_query_arg(
+				array(
+					'post'   => $edit_post_id,
+					'action' => 'edit',
+				),
+				admin_url( 'post.php' )
+			);
+			$type_label = $product->is_type( 'variation' ) ? __( 'Variable Product', 'shopify-woo-bridge' ) : __( 'Product', 'shopify-woo-bridge' );
+			return sprintf( '<strong>%s</strong><br><a href="%s">%s (ID: %d - %s)</a>', $wc_sku, esc_url( $edit_url ), esc_html( $title ), $edit_post_id, $type_label );
 		}
 
 		return $wc_sku . ' - ' . __( 'Product Not Found', 'shopify-woo-bridge' );
