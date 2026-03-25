@@ -162,7 +162,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 					<?php echo esc_html( isset( $field['title'] ) ? $field['title'] : __( 'Export', 'shopify-woo-bridge' ) ); ?>
 				</th>
 				<td class="forminp">
-					<a href="<?php echo esc_url( $action_url ); ?>" class="button button-primary"><?php esc_html_e( 'Retrieve products and inventory, then export CSV', 'shopify-woo-bridge' ); ?></a>
+					<a href="<?php echo esc_url( $action_url ); ?>" class="button button-primary swb-long-action-link" data-swb-long-action="1"><?php esc_html_e( 'Retrieve products and inventory, then export CSV', 'shopify-woo-bridge' ); ?></a>
 					<?php if ( ! empty( $field['desc'] ) ) : ?>
 						<p class="description"><?php echo esc_html( $field['desc'] ); ?></p>
 					<?php endif; ?>
@@ -190,7 +190,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 					<?php echo esc_html( isset( $field['title'] ) ? $field['title'] : __( 'Test connection', 'shopify-woo-bridge' ) ); ?>
 				</th>
 				<td class="forminp">
-					<a href="<?php echo esc_url( $action_url ); ?>" class="button"><?php esc_html_e( 'Test Shopify connection', 'shopify-woo-bridge' ); ?></a>
+					<a href="<?php echo esc_url( $action_url ); ?>" class="button swb-long-action-link" data-swb-long-action="1"><?php esc_html_e( 'Test Shopify connection', 'shopify-woo-bridge' ); ?></a>
 					<?php if ( ! empty( $field['desc'] ) ) : ?>
 						<p class="description"><?php echo esc_html( $field['desc'] ); ?></p>
 					<?php endif; ?>

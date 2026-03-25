@@ -1,0 +1,53 @@
+#swb-loading-overlay {
+	display: none;
+	position: fixed;
+	inset: 0;
+	z-index: 99999;
+	background: rgba(255, 255, 255, 0.78);
+	align-items: center;
+	justify-content: center;
+}
+
+#swb-loading-overlay.is-active {
+	display: flex;
+}
+
+.swb-loading-overlay-inner {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	padding: 14px 18px;
+	border-radius: 8px;
+	background: #fff;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+}
+
+.swb-loading-spinner {
+	width: 18px;
+	height: 18px;
+	border: 2px solid #dcdcde;
+	border-top-color: #2271b1;
+	border-radius: 50%;
+	animation: swb-spin 0.7s linear infinite;
+}
+
+.swb-loading-message {
+	font-size: 13px;
+	color: #1d2327;
+}
+
+body.swb-loading-active {
+	cursor: progress;
+}
+
+body.swb-loading-active .swb-long-action-link {
+	pointer-events: none;
+	opacity: 0.75;
+}
+
+@keyframes swb-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+

@@ -199,7 +199,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$state_args = self::get_preserved_state_query_args();
 		$actions = array(
 			'sync' => sprintf(
-				'<a href="%s">%s</a>',
+				'<a href="%s" class="swb-long-action-link" data-swb-long-action="1">%s</a>',
 				esc_url(
 					add_query_arg(
 						array_merge(
@@ -218,7 +218,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				__( 'Sync stock', 'shopify-woo-bridge' )
 			),
 			'sync_images' => sprintf(
-				'<a href="%s">%s</a>',
+				'<a href="%s" class="swb-long-action-link" data-swb-long-action="1">%s</a>',
 				esc_url(
 					add_query_arg(
 						array_merge(
