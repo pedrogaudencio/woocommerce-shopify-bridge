@@ -440,6 +440,15 @@ class SWB_Image_Sync {
 		$variation_gallery_attachment_ids = array_values( array_unique( array_filter( $variation_gallery_attachment_ids ) ) );
 		update_post_meta( $variation_id, '_product_image_gallery', implode( ',', array_map( 'absint', $variation_gallery_attachment_ids ) ) );
 
+		// Support for woo-product-gallery-slider plugin: save variation gallery to wavi_value meta key.
+		// The plugin uses this key to display additional variation gallery images on the frontend.
+		// Format: comma-separated attachment IDs (same as _product_image_gallery).
+		// Only save if plugin is active. Always override existing values (no empty check).
+		// Note: Frontend will prompt user if existing images are being overridden.
+		if ( is_plugin_active( 'woo-product-gallery-slider/woo-product-gallery-slider.php' ) ) {
+			update_post_meta( $variation_id, 'wavi_value', implode( ',', array_map( 'absint', $variation_gallery_attachment_ids ) ) );
+		}
+
 		// Assign the image to the variation.
 		$wc_product = wc_get_product( $variation_id );
 		if ( $attachment_id > 0 && $wc_product && $wc_product->is_type( 'variation' ) ) {
