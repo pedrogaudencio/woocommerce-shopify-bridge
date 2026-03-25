@@ -317,7 +317,7 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 				),
 				array(
 					'title'    => __( 'Global Kill Switch', 'shopify-woo-bridge' ),
-					'desc'     => __( 'Enable to immediately stop processing incoming stock updates from Shopify. This is a default-deny safeguard.', 'shopify-woo-bridge' ),
+					'desc'     => __( 'When checked, immediately stop processing incoming stock updates from Shopify. When unchecked, sync runs normally.', 'shopify-woo-bridge' ),
 					'id'       => 'swb_global_enable',
 					'default'  => 'no',
 					'type'     => 'checkbox',

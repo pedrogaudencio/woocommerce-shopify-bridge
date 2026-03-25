@@ -206,7 +206,7 @@ class Shopify_WooCommerce_Bridge {
 	public static function activate() {
 		// e.g., Set default options if they don't exist.
 		if ( false === get_option( 'swb_global_enable' ) ) {
-			add_option( 'swb_global_enable', 'no' ); // Default deny/disabled
+			add_option( 'swb_global_enable', 'no' ); // Default allow (kill switch off)
 		}
 
 		if ( false === get_option( 'swb_shopify_store_domain' ) ) {

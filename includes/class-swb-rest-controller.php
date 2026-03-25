@@ -107,7 +107,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 	 */
 	public function verify_shopify_signature( $request ) {
 		// 1. Check if the global kill switch is active.
-		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
+		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
 			// Even if disabled, we return 200 OK so Shopify doesn't disable the webhook due to failures.
 			// The actual processing will stop later, but here we just ensure the endpoint is responsive.
 			// Returning a WP_Error here would send a 4xx/5xx back to Shopify.
@@ -162,7 +162,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 	 * @return true|WP_Error True if the request has permission, WP_Error object otherwise.
 	 */
 	public function verify_api_permission( $request ) {
-		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
+		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
 			// Keep endpoint reachable for operational checks even when sync is disabled.
 			return true;
 		}
@@ -184,7 +184,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 	 */
 	public function process_webhook( $request ) {
 		// Check global enable again. If disabled, log and exit.
-		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
+		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
 			SWB_Logger::info( 'Webhook ignored: Global sync is disabled via kill switch.' );
 			return rest_ensure_response( array( 'status' => 'ignored', 'reason' => 'global_sync_disabled' ) );
 		}
@@ -326,7 +326,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		$inventory_item_id = sanitize_text_field( $request['inventory_item_id'] );
 
 		// Check if global sync is enabled.
-		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
+		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
 			SWB_Logger::info( 'Stock query ignored: Global sync is disabled.' );
 			return rest_ensure_response(
 				array(
@@ -467,7 +467,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		$limit = min( $limit, 200 );
 
 		// Check if global sync is enabled.
-		if ( 'yes' !== get_option( 'swb_global_enable', 'no' ) ) {
+		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
 			SWB_Logger::info( 'Stock history query ignored: Global sync is disabled.' );
 			return rest_ensure_response(
 				array(
