@@ -215,7 +215,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 						admin_url( 'admin.php' )
 					)
 				),
-				__( 'Sync', 'shopify-woo-bridge' )
+				__( 'Sync stock', 'shopify-woo-bridge' )
 			),
 			'sync_images' => sprintf(
 				'<a href="%s">%s</a>',
