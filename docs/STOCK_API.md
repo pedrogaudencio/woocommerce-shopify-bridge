@@ -41,6 +41,23 @@ wp_swb_stock_history (
 
 ## REST API Endpoints
 
+### General Tab Kill Switches
+
+- `Global Kill Switch` stops incoming webhook stock processing.
+- `Stock REST API Kill Switch` disables these REST API read endpoints:
+  - `GET /stock/{inventory_item_id}`
+  - `GET /stock/{inventory_item_id}/history`
+
+When the Stock REST API kill switch is enabled, those endpoints return HTTP `503` with:
+
+```json
+{
+  "success": false,
+  "error": "stock_api_disabled",
+  "message": "Stock REST API is currently disabled."
+}
+```
+
 ### Base URL
 ```
 /wp-json/shopify-bridge/v1
@@ -107,6 +124,7 @@ GET /stock/{inventory_item_id}
 - `200` - Success
 - `404` - Item not mapped
 - `403` - Mapping disabled
+- `503` - Stock REST API kill switch enabled
 - `503` - Global sync disabled
 - `500` - Shopify API error
 
@@ -178,6 +196,7 @@ GET /stock/{inventory_item_id}/history
 - `200` - Success
 - `404` - Item not mapped
 - `403` - Mapping disabled
+- `503` - Stock REST API kill switch enabled
 - `503` - Global sync disabled
 
 **Example Request:**
@@ -292,6 +311,7 @@ curl -X GET "https://example.com/wp-json/shopify-bridge/v1/stock/12345678/histor
 
 | Error Code | HTTP Status | Description |
 |-----------|------------|-------------|
+| `stock_api_disabled` | 503 | Stock REST API is disabled in plugin settings |
 | `global_sync_disabled` | 503 | Global sync is disabled in plugin settings |
 | `unmapped_item` | 404 | Inventory item is not mapped in the system |
 | `mapping_disabled` | 403 | The mapping for this item is disabled |
@@ -410,7 +430,11 @@ SWB_Logger::error('Stock update failed.', array(
 
 ### Issue: "Global sync disabled"
 - Go to WooCommerce → Shopify Bridge settings
-- Ensure the "Enable Shopify Bridge" option is checked
+- Ensure the "Global Kill Switch" option is unchecked
+
+### Issue: "Stock REST API is currently disabled"
+- Go to WooCommerce → Shopify Bridge settings → General
+- Ensure the "Stock REST API Kill Switch" option is unchecked
 
 ### Issue: "Stock update failed"
 - Check the logs for specific error messages

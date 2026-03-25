@@ -167,6 +167,11 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			return true;
 		}
 
+		if ( $this->is_stock_api_kill_switch_enabled() ) {
+			// Keep endpoint reachable for operational checks even when stock API is disabled.
+			return true;
+		}
+
 		// Allow WordPress administrators.
 		if ( current_user_can( 'manage_woocommerce' ) ) {
 			return true;
@@ -325,6 +330,11 @@ class SWB_REST_Controller extends WP_REST_Controller {
 	public function get_inventory_stock( $request ) {
 		$inventory_item_id = sanitize_text_field( $request['inventory_item_id'] );
 
+		if ( $this->is_stock_api_kill_switch_enabled() ) {
+			SWB_Logger::info( 'Stock query ignored: Stock REST API is disabled via kill switch.' );
+			return $this->stock_api_disabled_response();
+		}
+
 		// Check if global sync is enabled.
 		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
 			SWB_Logger::info( 'Stock query ignored: Global sync is disabled.' );
@@ -466,6 +476,11 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		}
 		$limit = min( $limit, 200 );
 
+		if ( $this->is_stock_api_kill_switch_enabled() ) {
+			SWB_Logger::info( 'Stock history query ignored: Stock REST API is disabled via kill switch.' );
+			return $this->stock_api_disabled_response();
+		}
+
 		// Check if global sync is enabled.
 		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
 			SWB_Logger::info( 'Stock history query ignored: Global sync is disabled.' );
@@ -521,5 +536,29 @@ class SWB_REST_Controller extends WP_REST_Controller {
 		SWB_Logger::info( 'Stock history queried successfully.', array( 'shopify_item_id' => $inventory_item_id, 'records' => count( $history ) ) );
 
 		return rest_ensure_response( $response_data )->set_status( 200 );
+	}
+
+	/**
+	 * Check if stock REST API kill switch is enabled.
+	 *
+	 * @return bool
+	 */
+	private function is_stock_api_kill_switch_enabled() {
+		return 'yes' === get_option( 'swb_stock_api_kill_switch', 'no' );
+	}
+
+	/**
+	 * Standard response when stock REST API is disabled.
+	 *
+	 * @return WP_REST_Response
+	 */
+	private function stock_api_disabled_response() {
+		return rest_ensure_response(
+			array(
+				'success' => false,
+				'error'   => 'stock_api_disabled',
+				'message' => __( 'Stock REST API is currently disabled.', 'shopify-woo-bridge' ),
+			)
+		)->set_status( 503 );
 	}
 }

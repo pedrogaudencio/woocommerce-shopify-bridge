@@ -209,6 +209,10 @@ class Shopify_WooCommerce_Bridge {
 			add_option( 'swb_global_enable', 'no' ); // Default allow (kill switch off)
 		}
 
+		if ( false === get_option( 'swb_stock_api_kill_switch' ) ) {
+			add_option( 'swb_stock_api_kill_switch', 'no' ); // Default allow (stock API kill switch off)
+		}
+
 		if ( false === get_option( 'swb_shopify_store_domain' ) ) {
 			add_option( 'swb_shopify_store_domain', '', '', 'no' );
 		}

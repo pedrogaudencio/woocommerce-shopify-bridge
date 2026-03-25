@@ -324,6 +324,14 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 					'desc_tip' => true,
 				),
 				array(
+					'title'    => __( 'Stock REST API Kill Switch', 'shopify-woo-bridge' ),
+					'desc'     => __( 'When checked, disable stock REST API endpoints (/stock/{inventory_item_id} and /stock/{inventory_item_id}/history).', 'shopify-woo-bridge' ),
+					'id'       => 'swb_stock_api_kill_switch',
+					'default'  => 'no',
+					'type'     => 'checkbox',
+					'desc_tip' => true,
+				),
+				array(
 					'title'             => __( 'Shopify Webhook Secret', 'shopify-woo-bridge' ),
 					'type'              => 'password',
 					'desc'              => __( 'Enter the HMAC-SHA256 secret key provided by Shopify when creating the webhook.', 'shopify-woo-bridge' ),
