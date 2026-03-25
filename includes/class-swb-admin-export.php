@@ -46,12 +46,13 @@ class SWB_Admin_Export {
 		if ( empty( $connection['success'] ) ) {
 			$message = isset( $connection['message'] ) ? $connection['message'] : __( 'Connection failed.', 'shopify-woo-bridge' );
 			SWB_Logger::error( 'Manual Shopify connection test failed.', array( 'message' => $message ) );
-			$this->redirect_with_notice( 'error', $message );
+			$this->redirect_with_notice( 'error', $message, 'credentials' );
 		}
 
 		$this->redirect_with_notice(
 			'success',
-			isset( $connection['message'] ) ? $connection['message'] : __( 'Connection successful.', 'shopify-woo-bridge' )
+			isset( $connection['message'] ) ? $connection['message'] : __( 'Connection successful.', 'shopify-woo-bridge' ),
+			'credentials'
 		);
 	}
 
@@ -303,9 +304,10 @@ class SWB_Admin_Export {
 	 *
 	 * @param string $type Notice type.
 	 * @param string $message Notice message.
+	 * @param string $tab Settings tab slug.
 	 */
-	private function redirect_with_notice( $type, $message ) {
-		$url = $this->get_settings_return_url();
+	private function redirect_with_notice( $type, $message, $tab = 'export' ) {
+		$url = $this->get_settings_return_url( $tab );
 		$url = add_query_arg(
 			array(
 				'swb_notice'         => '1',
@@ -362,10 +364,20 @@ class SWB_Admin_Export {
 	/**
 	 * Resolve where action handlers should redirect on completion.
 	 *
+	 * @param string $tab Settings tab slug.
 	 * @return string
 	 */
-	private function get_settings_return_url() {
-		return admin_url( 'admin.php?page=shopify-bridge-mappings&tab=export' );
+	private function get_settings_return_url( $tab = 'export' ) {
+		$allowed_tabs = array( 'general', 'credentials', 'export' );
+		$tab          = in_array( $tab, $allowed_tabs, true ) ? $tab : 'export';
+
+		return add_query_arg(
+			array(
+				'page' => 'shopify-bridge-mappings',
+				'tab'  => $tab,
+			),
+			admin_url( 'admin.php' )
+		);
 	}
 
 	/**
