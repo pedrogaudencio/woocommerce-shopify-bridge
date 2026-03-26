@@ -19,6 +19,20 @@ if ( ! class_exists( 'WP_List_Table' ) ) {
 class SWB_Mapping_List_Table extends WP_List_Table {
 
 	/**
+	 * Option key prefix for selected bulk image sync jobs.
+	 *
+	 * @var string
+	 */
+	const SELECTED_BULK_IMAGE_SYNC_JOB_OPTION_PREFIX = 'swb_selected_bulk_image_sync_job_';
+
+	/**
+	 * Default number of selected mappings to process per request.
+	 *
+	 * @var int
+	 */
+	const SELECTED_BULK_IMAGE_SYNC_BATCH_SIZE = 12;
+
+	/**
 	 * Read a mapping field regardless of row data shape.
 	 *
 	 * @param array|object $item Mapping row.
@@ -299,7 +313,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				__( 'Sync stock', 'shopify-woo-bridge' )
 			),
 			'sync_images' => sprintf(
-				'<a href="%s" class="swb-long-action-link" data-swb-long-action="1"%s>%s</a>',
+				'<a href="%s" class="swb-long-action-link" data-swb-long-action="1" %s>%s</a>',
 				esc_url(
 					add_query_arg(
 						array_merge(
@@ -899,6 +913,39 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$state_args = self::get_preserved_state_query_args();
 		$bulk_action = $this->current_action();
 
+		if ( isset( $_GET['swb_bulk_sync_images_selected_continue'], $_GET['swb_bulk_sync_images_selected_job'] ) ) {
+			if ( ! current_user_can( 'manage_woocommerce' ) ) {
+				wp_die( 'Unauthorized.' );
+			}
+
+			$job_token = preg_replace( '/[^a-zA-Z0-9]/', '', (string) wp_unslash( $_GET['swb_bulk_sync_images_selected_job'] ) );
+			if ( '' === $job_token ) {
+				wp_safe_redirect(
+					add_query_arg(
+						array_merge(
+							array(
+								'page'        => 'shopify-bridge-mappings',
+								'tab'         => 'mappings',
+								'swb_notice'  => '1',
+								'swb_type'    => 'error',
+								'swb_message' => __( 'Selected bulk image sync session is invalid.', 'shopify-woo-bridge' ),
+							),
+							$state_args
+						),
+						admin_url( 'admin.php' )
+					)
+				);
+				exit;
+			}
+
+			if ( ! isset( $_GET['swb_job_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['swb_job_nonce'] ) ), 'swb_selected_bulk_sync_images_job_' . $job_token ) ) {
+				wp_die( 'Security check failed.' );
+			}
+
+			$this->process_selected_bulk_image_sync_job( $job_token );
+			exit;
+		}
+
 		if ( in_array( $bulk_action, array( 'bulk-sync-stock', 'bulk-sync-images', 'bulk-reset-media-status', 'bulk-enable', 'bulk-disable' ), true ) ) {
 			if ( ! current_user_can( 'manage_woocommerce' ) ) {
 				wp_die( 'Unauthorized.' );
@@ -930,6 +977,11 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				exit;
 			}
 
+			if ( 'bulk-sync-images' === $bulk_action ) {
+				$this->start_selected_bulk_image_sync_job( $mapping_ids, $state_args );
+				exit;
+			}
+
 			$failed      = 0;
 			$processed   = 0;
 			$skipped     = 0;
@@ -938,10 +990,6 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			$enabled     = 0;
 			$disabled    = 0;
 			$sync_images = null;
-
-			if ( 'bulk-sync-images' === $bulk_action ) {
-				$sync_images = new SWB_Image_Sync();
-			}
 
 			foreach ( $mapping_ids as $mapping_id ) {
 				$mapping = SWB_DB::get_mapping( $mapping_id );
@@ -1286,6 +1334,199 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			wp_safe_redirect( add_query_arg( array_merge( array( 'page' => 'shopify-bridge-mappings', 'tab' => 'mappings' ), $state_args ), admin_url( 'admin.php' ) ) );
 			exit;
 		}
+	}
+
+	/**
+	 * Start resumable selected-row bulk image sync.
+	 *
+	 * @param array $mapping_ids Selected mapping IDs.
+	 * @param array $state_args Preserved table state args.
+	 * @return void
+	 */
+	private function start_selected_bulk_image_sync_job( $mapping_ids, $state_args ) {
+		$mapping_ids = array_values( array_unique( array_filter( array_map( 'absint', (array) $mapping_ids ) ) ) );
+		$job_token   = wp_generate_password( 20, false, false );
+		$option_key  = $this->get_selected_bulk_image_sync_job_option_key( $job_token );
+
+		$state = array(
+			'mapping_ids' => $mapping_ids,
+			'offset'      => 0,
+			'processed'   => 0,
+			'updated'     => 0,
+			'unchanged'   => 0,
+			'skipped'     => 0,
+			'failed'      => 0,
+			'state_args'  => is_array( $state_args ) ? $state_args : array(),
+		);
+
+		update_option( $option_key, $state, false );
+		$this->redirect_selected_bulk_image_sync_job( $job_token, $state['state_args'] );
+	}
+
+	/**
+	 * Process one batch of selected-row bulk image sync.
+	 *
+	 * @param string $job_token Job token.
+	 * @return void
+	 */
+	private function process_selected_bulk_image_sync_job( $job_token ) {
+		$option_key = $this->get_selected_bulk_image_sync_job_option_key( $job_token );
+		$state      = get_option( $option_key, null );
+
+		if ( ! is_array( $state ) || empty( $state['mapping_ids'] ) || ! is_array( $state['mapping_ids'] ) ) {
+			delete_option( $option_key );
+			wp_safe_redirect(
+				add_query_arg(
+					array(
+						'page'        => 'shopify-bridge-mappings',
+						'tab'         => 'mappings',
+						'swb_notice'  => '1',
+						'swb_type'    => 'error',
+						'swb_message' => __( 'Selected bulk image sync session expired. Please run it again.', 'shopify-woo-bridge' ),
+					),
+					admin_url( 'admin.php' )
+				)
+			);
+			return;
+		}
+
+		$mapping_ids = array_values( array_filter( array_map( 'absint', $state['mapping_ids'] ) ) );
+		$offset      = isset( $state['offset'] ) ? absint( $state['offset'] ) : 0;
+		$batch_size  = $this->get_selected_bulk_image_sync_batch_size();
+		$max_index   = min( count( $mapping_ids ), $offset + $batch_size );
+		$sync_images = new SWB_Image_Sync();
+
+		for ( $index = $offset; $index < $max_index; $index++ ) {
+			$mapping_id = $mapping_ids[ $index ];
+			$mapping    = SWB_DB::get_mapping( $mapping_id );
+			if ( ! $mapping ) {
+				$state['failed'] = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
+				continue;
+			}
+
+			$is_enabled = (int) $this->get_item_value( $mapping, 'is_enabled', 0 );
+			if ( 1 !== $is_enabled ) {
+				$state['skipped'] = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+				continue;
+			}
+
+			$shopify_product_id = (string) $this->get_item_value( $mapping, 'shopify_product_id', '' );
+			if ( '' === $shopify_product_id ) {
+				$state['skipped'] = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+				continue;
+			}
+
+			$state['processed'] = isset( $state['processed'] ) ? intval( $state['processed'] ) + 1 : 1;
+			$result             = $sync_images->sync_images_for_mapping( $mapping );
+
+			if ( ! empty( $result['success'] ) ) {
+				$this->set_media_sync_status( $mapping_id, ! empty( $result['changed'] ) ? 'changed' : 'unchanged', '' );
+				if ( ! empty( $result['changed'] ) ) {
+					$state['updated'] = isset( $state['updated'] ) ? intval( $state['updated'] ) + 1 : 1;
+				} else {
+					$state['unchanged'] = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) + 1 : 1;
+				}
+				continue;
+			}
+
+			$this->set_media_sync_status(
+				$mapping_id,
+				'error',
+				! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' )
+			);
+			$state['failed'] = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
+		}
+
+		$state['offset'] = $max_index;
+		$state_args      = isset( $state['state_args'] ) && is_array( $state['state_args'] ) ? $state['state_args'] : array();
+
+		if ( $max_index < count( $mapping_ids ) ) {
+			update_option( $option_key, $state, false );
+			$this->redirect_selected_bulk_image_sync_job( $job_token, $state_args );
+			return;
+		}
+
+		delete_option( $option_key );
+
+		$failed      = isset( $state['failed'] ) ? intval( $state['failed'] ) : 0;
+		$processed   = isset( $state['processed'] ) ? intval( $state['processed'] ) : 0;
+		$updated     = isset( $state['updated'] ) ? intval( $state['updated'] ) : 0;
+		$unchanged   = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) : 0;
+		$skipped     = isset( $state['skipped'] ) ? intval( $state['skipped'] ) : 0;
+		$notice_type = $failed > 0 ? 'error' : 'success';
+
+		$message = sprintf(
+			/* translators: 1: processed mappings, 2: changed mappings, 3: unchanged mappings, 4: skipped mappings, 5: failed mappings. */
+			__( 'Bulk image sync complete. Processed: %1$d, Changed: %2$d, Unchanged: %3$d, Skipped: %4$d, Failed: %5$d.', 'shopify-woo-bridge' ),
+			$processed,
+			$updated,
+			$unchanged,
+			$skipped,
+			$failed
+		);
+
+		wp_safe_redirect(
+			add_query_arg(
+				array_merge(
+					array(
+						'page'        => 'shopify-bridge-mappings',
+						'tab'         => 'mappings',
+						'swb_notice'  => '1',
+						'swb_type'    => $notice_type,
+						'swb_message' => $message,
+					),
+					$state_args
+				),
+				admin_url( 'admin.php' )
+			)
+		);
+	}
+
+	/**
+	 * Build option key for selected bulk image sync job state.
+	 *
+	 * @param string $job_token Job token.
+	 * @return string
+	 */
+	private function get_selected_bulk_image_sync_job_option_key( $job_token ) {
+		return self::SELECTED_BULK_IMAGE_SYNC_JOB_OPTION_PREFIX . $job_token;
+	}
+
+	/**
+	 * Redirect to continue selected bulk image sync processing.
+	 *
+	 * @param string $job_token Job token.
+	 * @param array  $state_args State query args to preserve.
+	 * @return void
+	 */
+	private function redirect_selected_bulk_image_sync_job( $job_token, $state_args ) {
+		wp_safe_redirect(
+			add_query_arg(
+				array_merge(
+					array(
+						'page'                                 => 'shopify-bridge-mappings',
+						'tab'                                  => 'mappings',
+						'swb_bulk_sync_images_selected_continue' => '1',
+						'swb_bulk_sync_images_selected_job'      => $job_token,
+						'swb_job_nonce'                        => wp_create_nonce( 'swb_selected_bulk_sync_images_job_' . $job_token ),
+					),
+					is_array( $state_args ) ? $state_args : array()
+				),
+				admin_url( 'admin.php' )
+			)
+		);
+	}
+
+	/**
+	 * Resolve selected bulk image sync batch size.
+	 *
+	 * @return int
+	 */
+	private function get_selected_bulk_image_sync_batch_size() {
+		$batch_size = apply_filters( 'swb_selected_bulk_image_sync_batch_size', self::SELECTED_BULK_IMAGE_SYNC_BATCH_SIZE );
+		$batch_size = intval( $batch_size );
+
+		return max( 1, min( 100, $batch_size ) );
 	}
 
 	/**
