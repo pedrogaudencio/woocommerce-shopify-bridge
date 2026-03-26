@@ -350,6 +350,32 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 					'type'    => 'checkbox',
 				),
 				array(
+					'title'             => __( 'Shopify API min request interval (seconds)', 'shopify-woo-bridge' ),
+					'desc'              => __( 'Minimum spacing between Shopify API calls. Increase this if your store is frequently rate limited.', 'shopify-woo-bridge' ),
+					'id'                => 'swb_shopify_min_request_interval_seconds',
+					'default'           => '0.55',
+					'type'              => 'number',
+					'desc_tip'          => true,
+					'custom_attributes' => array(
+						'min'  => '0.1',
+						'max'  => '2',
+						'step' => '0.05',
+					),
+				),
+				array(
+					'title'             => __( 'Shopify API max retry attempts', 'shopify-woo-bridge' ),
+					'desc'              => __( 'Maximum retries after Shopify returns HTTP 429. Higher values can increase wait time during exports.', 'shopify-woo-bridge' ),
+					'id'                => 'swb_shopify_max_rate_limit_retries',
+					'default'           => '5',
+					'type'              => 'number',
+					'desc_tip'          => true,
+					'custom_attributes' => array(
+						'min'  => '1',
+						'max'  => '10',
+						'step' => '1',
+					),
+				),
+				array(
 					'type' => 'sectionend',
 					'id'   => 'swb_general_options',
 				),

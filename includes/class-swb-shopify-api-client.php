@@ -29,6 +29,27 @@ class SWB_Shopify_API_Client {
 	const ACCESS_TOKEN_TTL = 86400;
 
 	/**
+	 * Maximum request attempts before failing a throttled request.
+	 *
+	 * @var int
+	 */
+	const MAX_RATE_LIMIT_RETRIES = 5;
+
+	/**
+	 * Minimum spacing between Shopify calls in seconds.
+	 *
+	 * @var float
+	 */
+	const MIN_REQUEST_INTERVAL_SECONDS = 0.55;
+
+	/**
+	 * Persisted option used to coordinate the next allowed Shopify request time.
+	 *
+	 * @var string
+	 */
+	const NEXT_REQUEST_AT_OPTION = 'swb_shopify_next_request_at';
+
+	/**
 	 * Validate credentials by performing a read-only shop query.
 	 *
 	 * @return array
@@ -352,36 +373,183 @@ class SWB_Shopify_API_Client {
 			'headers' => $this->build_headers( $auth ),
 		);
 
-		$attempts = 0;
-		do {
-			$attempts++;
-			$raw_response = wp_remote_request( $url, $args );
+		$raw_response = $this->execute_request_with_rate_limit( $url, $args );
+		if ( is_wp_error( $raw_response ) ) {
+			return $raw_response;
+		}
 
+		$code    = wp_remote_retrieve_response_code( $raw_response );
+		$body    = json_decode( wp_remote_retrieve_body( $raw_response ), true );
+		$headers = wp_remote_retrieve_headers( $raw_response );
+
+		if ( intval( $code ) < 200 || intval( $code ) >= 300 ) {
+			return new WP_Error( 'swb_shopify_request_failed', $this->build_error_message( $code, $body ) );
+		}
+
+		return array(
+			'code'    => intval( $code ),
+			'body'    => is_array( $body ) ? $body : array(),
+			'headers' => $headers,
+		);
+	}
+
+	/**
+	 * Execute a Shopify request with proactive throttling and 429 retry handling.
+	 *
+	 * @param string $url Full URL.
+	 * @param array  $args Request args for wp_remote_request.
+	 * @return array|WP_Error
+	 */
+	private function execute_request_with_rate_limit( $url, $args ) {
+		$attempts = 0;
+		$max_retries = $this->get_max_rate_limit_retries();
+
+		do {
+			++$attempts;
+			$this->wait_for_request_slot();
+
+			$raw_response = wp_remote_request( $url, $args );
 			if ( is_wp_error( $raw_response ) ) {
 				return $raw_response;
 			}
 
-			$code    = wp_remote_retrieve_response_code( $raw_response );
-			$body    = json_decode( wp_remote_retrieve_body( $raw_response ), true );
-			$headers = wp_remote_retrieve_headers( $raw_response );
-
-			if ( 429 !== intval( $code ) ) {
-				if ( intval( $code ) < 200 || intval( $code ) >= 300 ) {
-					return new WP_Error( 'swb_shopify_request_failed', $this->build_error_message( $code, $body ) );
-				}
-
-				return array(
-					'code'    => intval( $code ),
-					'body'    => is_array( $body ) ? $body : array(),
-					'headers' => $headers,
-				);
+			$code = intval( wp_remote_retrieve_response_code( $raw_response ) );
+			if ( 429 !== $code ) {
+				$this->apply_post_response_throttle( $raw_response );
+				return $raw_response;
 			}
 
-			$retry_after = isset( $headers['retry-after'] ) ? max( 1, intval( $headers['retry-after'] ) ) : $attempts;
+			$retry_after = $this->extract_retry_after_seconds( $raw_response, $attempts );
+			SWB_Logger::warning(
+				'Shopify rate limit encountered. Retrying request after wait.',
+				array(
+					'url'         => $url,
+					'attempt'     => $attempts,
+					'retry_after' => $retry_after,
+				)
+			);
+
+			$this->reserve_request_slot( $retry_after );
 			sleep( $retry_after );
-		} while ( $attempts < 3 );
+		} while ( $attempts < $max_retries );
 
 		return new WP_Error( 'swb_shopify_rate_limited', __( 'Shopify API rate limit reached. Please try again shortly.', 'shopify-woo-bridge' ) );
+	}
+
+	/**
+	 * Wait until the next allowed Shopify request slot and reserve a new baseline slot.
+	 *
+	 * @return void
+	 */
+	private function wait_for_request_slot() {
+		$next_allowed = floatval( get_option( self::NEXT_REQUEST_AT_OPTION, 0 ) );
+		$now          = microtime( true );
+
+		if ( $next_allowed > $now ) {
+			$wait_microseconds = intval( ( $next_allowed - $now ) * 1000000 );
+			if ( $wait_microseconds > 0 ) {
+				usleep( $wait_microseconds );
+			}
+		}
+
+		$this->reserve_request_slot( $this->get_min_request_interval_seconds() );
+	}
+
+	/**
+	 * Reserve the next available request slot with a delay.
+	 *
+	 * @param float|int $delay_seconds Number of seconds to delay.
+	 * @return void
+	 */
+	private function reserve_request_slot( $delay_seconds ) {
+		$delay_seconds = max( 0, floatval( $delay_seconds ) );
+		$existing      = floatval( get_option( self::NEXT_REQUEST_AT_OPTION, 0 ) );
+		$base          = max( microtime( true ), $existing );
+		$next_allowed  = $base + $delay_seconds;
+
+		update_option( self::NEXT_REQUEST_AT_OPTION, (string) $next_allowed, false );
+	}
+
+	/**
+	 * Apply additional throttle after successful responses when the bucket is near full.
+	 *
+	 * @param array $raw_response WP HTTP response.
+	 * @return void
+	 */
+	private function apply_post_response_throttle( $raw_response ) {
+		$call_limit_header = trim( (string) wp_remote_retrieve_header( $raw_response, 'x-shopify-shop-api-call-limit' ) );
+		if ( '' === $call_limit_header ) {
+			return;
+		}
+
+		if ( ! preg_match( '/^\s*(\d+)\s*\/\s*(\d+)\s*$/', $call_limit_header, $matches ) ) {
+			return;
+		}
+
+		$used  = intval( $matches[1] );
+		$total = intval( $matches[2] );
+		if ( $total <= 0 ) {
+			return;
+		}
+
+		$ratio         = $used / $total;
+		$extra_seconds = 0;
+
+		if ( $ratio >= 0.95 ) {
+			$extra_seconds = 1;
+		} elseif ( $ratio >= 0.85 ) {
+			$extra_seconds = 0.5;
+		}
+
+		if ( $extra_seconds > 0 ) {
+			$this->reserve_request_slot( $extra_seconds );
+		}
+	}
+
+	/**
+	 * Read Retry-After (seconds) with a bounded fallback.
+	 *
+	 * @param array $raw_response WP HTTP response.
+	 * @param int   $attempt Current retry attempt.
+	 * @return int
+	 */
+	private function extract_retry_after_seconds( $raw_response, $attempt ) {
+		$retry_after_header = trim( (string) wp_remote_retrieve_header( $raw_response, 'retry-after' ) );
+		if ( '' !== $retry_after_header && ctype_digit( $retry_after_header ) ) {
+			return max( 1, min( 30, intval( $retry_after_header ) ) );
+		}
+
+		return max( 1, min( 30, $attempt ) );
+	}
+
+	/**
+	 * Resolve minimum request interval from settings/filters with safe bounds.
+	 *
+	 * @return float
+	 */
+	private function get_min_request_interval_seconds() {
+		$interval = floatval( get_option( 'swb_shopify_min_request_interval_seconds', self::MIN_REQUEST_INTERVAL_SECONDS ) );
+		$interval = max( 0.1, min( 2.0, $interval ) );
+
+		$interval = apply_filters( 'swb_shopify_min_request_interval_seconds', $interval );
+		$interval = floatval( $interval );
+
+		return max( 0.1, min( 2.0, $interval ) );
+	}
+
+	/**
+	 * Resolve maximum retries for 429 responses from settings/filters with safe bounds.
+	 *
+	 * @return int
+	 */
+	private function get_max_rate_limit_retries() {
+		$max_retries = intval( get_option( 'swb_shopify_max_rate_limit_retries', self::MAX_RATE_LIMIT_RETRIES ) );
+		$max_retries = max( 1, min( 10, $max_retries ) );
+
+		$max_retries = apply_filters( 'swb_shopify_max_rate_limit_retries', $max_retries );
+		$max_retries = intval( $max_retries );
+
+		return max( 1, min( 10, $max_retries ) );
 	}
 
 	/**
@@ -490,9 +658,10 @@ class SWB_Shopify_API_Client {
 
 		$url = 'https://' . $store_domain . '/admin/oauth/access_token';
 
-		$response = wp_remote_post(
+		$response = $this->execute_request_with_rate_limit(
 			$url,
 			array(
+				'method'  => 'POST',
 				'timeout' => 30,
 				'headers' => array(
 					'Accept'       => 'application/json',
