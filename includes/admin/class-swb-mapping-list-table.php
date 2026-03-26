@@ -39,6 +39,57 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	}
 
 	/**
+	 * Get existing variation gallery value used by woo-product-gallery-slider.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return string
+	 */
+	private function get_existing_variation_wavi_value( $item ) {
+		$wc_sku = trim( (string) $this->get_item_value( $item, 'wc_sku', '' ) );
+		if ( '' === $wc_sku || ! function_exists( 'wc_get_product_id_by_sku' ) ) {
+			return '';
+		}
+
+		$product_id = absint( wc_get_product_id_by_sku( $wc_sku ) );
+		if ( $product_id <= 0 ) {
+			return '';
+		}
+
+		$product = wc_get_product( $product_id );
+		if ( ! $product || ! $product->is_type( 'variation' ) ) {
+			return '';
+		}
+
+		return trim( (string) get_post_meta( $product_id, 'wavi_value', true ) );
+	}
+
+	/**
+	 * Build onclick confirmation attribute when existing variation images will be overridden.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return string
+	 */
+	private function get_sync_images_confirm_attr( $item ) {
+		$existing_wavi_value = $this->get_existing_variation_wavi_value( $item );
+		if ( '' === $existing_wavi_value ) {
+			return '';
+		}
+
+		$preview = $existing_wavi_value;
+		if ( strlen( $preview ) > 60 ) {
+			$preview = substr( $preview, 0, 57 ) . '...';
+		}
+
+		$message = sprintf(
+			/* translators: %s existing variation gallery attachment IDs. */
+			__( 'This variation already has additional images (%s). Syncing images will override them. Continue?', 'shopify-woo-bridge' ),
+			$preview
+		);
+
+		return ' onclick="return window.confirm(\'' . esc_js( $message ) . '\');"';
+	}
+
+	/**
 	 * Constructor.
 	 */
 	public function __construct() {
@@ -197,6 +248,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$is_enabled = (int) $this->get_item_value( $item, 'is_enabled', 0 );
 
 		$state_args = self::get_preserved_state_query_args();
+		$sync_images_confirm_attr = $this->get_sync_images_confirm_attr( $item );
 		$actions = array(
 			'sync' => sprintf(
 				'<a href="%s" class="swb-long-action-link" data-swb-long-action="1">%s</a>',
@@ -218,7 +270,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				__( 'Sync stock', 'shopify-woo-bridge' )
 			),
 			'sync_images' => sprintf(
-				'<a href="%s" class="swb-long-action-link" data-swb-long-action="1">%s</a>',
+				'<a href="%s" class="swb-long-action-link" data-swb-long-action="1"%s>%s</a>',
 				esc_url(
 					add_query_arg(
 						array_merge(
@@ -234,6 +286,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 						admin_url( 'admin.php' )
 					)
 				),
+				$sync_images_confirm_attr,
 				__( 'Sync Images', 'shopify-woo-bridge' )
 			),
 			'toggle' => sprintf(

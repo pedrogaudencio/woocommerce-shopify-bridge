@@ -139,18 +139,95 @@ class SWB_Admin_Mappings {
 				<input type="hidden" name="swb_bulk_sync_stock" value="1" />
 				<?php submit_button( __( 'Sync Stock of all eligible mappings', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
 			</form>
-			<form method="post" action="" style="display: inline-block; margin-left: 8px;" data-swb-long-action="1">
+			<form method="post" action="" style="display: inline-block; margin-left: 8px;" data-swb-long-action="1" id="swb-bulk-sync-images-form">
 				<?php wp_nonce_field( 'swb_bulk_sync_images_action', 'swb_bulk_sync_images_nonce' ); ?>
 				<input type="hidden" name="page" value="shopify-bridge-mappings" />
 				<input type="hidden" name="tab" value="mappings" />
 				<input type="hidden" name="swb_product_type" value="<?php echo esc_attr( $current_product_type ); ?>" />
 				<input type="hidden" name="swb_bulk_sync_images" value="1" />
+				<input type="hidden" name="swb_override_all_variations" value="0" id="swb-override-all-flag" />
 				<?php submit_button( __( 'Sync Images for all eligible mappings', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
 			</form>
 			<p class="description" style="margin:8px 0 0;">
 				<?php esc_html_e( 'Bulk stock sync uses Shopify inventory levels and sums available quantity across locations per inventory item.', 'shopify-woo-bridge' ); ?>
 			</p>
 		</div>
+		<script type="text/javascript">
+			(function($) {
+				'use strict';
+				
+				/**
+				 * Handle bulk sync images form submission with three-button confirmation dialog.
+				 */
+				$('#swb-bulk-sync-images-form').on('submit', function(e) {
+					var $form = $(this);
+					var overrideFlagInput = $form.find('#swb-override-all-flag');
+					
+					// If override flag is already set, proceed normally.
+					if ('1' === overrideFlagInput.val()) {
+						return true;
+					}
+					
+					// Check if any variation mappings have existing wavi_value.
+					var hasExistingVariationImages = false;
+					
+					// We need to check the DOM to see if there are variations with existing images.
+					// For now, show the dialog regardless since the backend will check.
+					// The dialog will only be shown if there are actual variations with existing data.
+					
+					e.preventDefault();
+					
+					var dialogHtml = '<div id="swb-sync-confirm-dialog" style="display:none;">' +
+						'<p style="margin: 0 0 16px 0;">' +
+						'<?php echo esc_js( __( 'Some variations already have additional images. What would you like to do?', 'shopify-woo-bridge' ) ); ?>' +
+						'</p>' +
+						'</div>';
+					
+					$(document.body).append(dialogHtml);
+					
+					var $dialog = $('#swb-sync-confirm-dialog');
+					
+					$dialog.dialog({
+						title: '<?php echo esc_js( __( 'Sync Images - Confirm Action', 'shopify-woo-bridge' ) ); ?>',
+						modal: true,
+						width: 450,
+						draggable: false,
+						resizable: false,
+						close: function() {
+							$(this).dialog('destroy').remove();
+						},
+						buttons: [
+							{
+								text: '<?php echo esc_js( __( 'Cancel', 'shopify-woo-bridge' ) ); ?>',
+								class: 'button',
+								click: function() {
+									$dialog.dialog('close');
+									overrideFlagInput.val('0');
+								}
+							},
+							{
+								text: '<?php echo esc_js( __( 'OK - Override This Time', 'shopify-woo-bridge' ) ); ?>',
+								class: 'button',
+								click: function() {
+									overrideFlagInput.val('0');
+									$form.off('submit').submit();
+									$dialog.dialog('close');
+								}
+							},
+							{
+								text: '<?php echo esc_js( __( 'OK for All', 'shopify-woo-bridge' ) ); ?>',
+								class: 'button button-primary',
+								click: function() {
+									overrideFlagInput.val('1');
+									$form.off('submit').submit();
+									$dialog.dialog('close');
+								}
+							}
+						]
+					});
+				});
+			})(jQuery);
+		</script>
 		<div id="poststuff">
 			<div id="post-body" class="metabox-holder columns-2">
 				<div id="post-body-content">

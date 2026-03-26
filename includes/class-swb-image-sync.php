@@ -444,8 +444,8 @@ class SWB_Image_Sync {
 		// The plugin uses this key to display additional variation gallery images on the frontend.
 		// Format: comma-separated attachment IDs (same as _product_image_gallery).
 		// Only save if plugin is active. Always override existing values (no empty check).
-		// Note: Frontend will prompt user if existing images are being overridden.
-		if ( is_plugin_active( 'woo-product-gallery-slider/woo-product-gallery-slider.php' ) ) {
+		// Note: Frontend prompts for confirmation before triggering this action when existing data is present.
+		if ( $this->is_wpgs_plugin_active() ) {
 			update_post_meta( $variation_id, 'wavi_value', implode( ',', array_map( 'absint', $variation_gallery_attachment_ids ) ) );
 		}
 
@@ -737,6 +737,19 @@ class SWB_Image_Sync {
 		);
 
 		return md5( wp_json_encode( $payload ) );
+	}
+
+	/**
+	 * Check whether woo-product-gallery-slider is active.
+	 *
+	 * @return bool
+	 */
+	private function is_wpgs_plugin_active() {
+		if ( ! function_exists( 'is_plugin_active' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		return function_exists( 'is_plugin_active' ) && is_plugin_active( 'woo-product-gallery-slider/woo-product-gallery-slider.php' );
 	}
 
 	/**
