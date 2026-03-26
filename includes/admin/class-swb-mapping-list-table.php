@@ -128,6 +128,22 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	}
 
 	/**
+	 * Read mapping state filter from request.
+	 *
+	 * @return string
+	 */
+	private static function get_mapping_state_filter() {
+		$allowed = array( 'all', 'enabled', 'invalidated', 'disabled' );
+		$value   = isset( $_REQUEST['swb_mapping_state'] ) ? sanitize_key( $_REQUEST['swb_mapping_state'] ) : 'all'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+		if ( ! in_array( $value, $allowed, true ) ) {
+			return 'all';
+		}
+
+		return $value;
+	}
+
+	/**
 	 * Read product type filter from request.
 	 *
 	 * @return string
@@ -156,6 +172,11 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			$args['swb_product_type'] = $product_type;
 		}
 
+		$mapping_state = self::get_mapping_state_filter();
+		if ( 'all' !== $mapping_state ) {
+			$args['swb_mapping_state'] = $mapping_state;
+		}
+
 		if ( isset( $_REQUEST['s'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			$search = sanitize_text_field( wp_unslash( $_REQUEST['s'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			if ( '' !== $search ) {
@@ -176,7 +197,8 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			return;
 		}
 
-		$current_filter = self::get_product_type_filter();
+		$current_filter       = self::get_product_type_filter();
+		$current_state_filter = self::get_mapping_state_filter();
 		?>
 		<div class="alignleft actions">
 			<label class="screen-reader-text" for="swb-product-type-filter"><?php esc_html_e( 'Filter by product type', 'shopify-woo-bridge' ); ?></label>
@@ -187,6 +209,13 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				<option value="variation" <?php selected( $current_filter, 'variation' ); ?>><?php esc_html_e( 'Variation', 'shopify-woo-bridge' ); ?></option>
 				<option value="grouped" <?php selected( $current_filter, 'grouped' ); ?>><?php esc_html_e( 'Grouped', 'shopify-woo-bridge' ); ?></option>
 				<option value="external" <?php selected( $current_filter, 'external' ); ?>><?php esc_html_e( 'External/Affiliate', 'shopify-woo-bridge' ); ?></option>
+			</select>
+			<label class="screen-reader-text" for="swb-mapping-state-filter"><?php esc_html_e( 'Filter by mapping status', 'shopify-woo-bridge' ); ?></label>
+			<select name="swb_mapping_state" id="swb-mapping-state-filter">
+				<option value="all" <?php selected( $current_state_filter, 'all' ); ?>><?php esc_html_e( 'All statuses', 'shopify-woo-bridge' ); ?></option>
+				<option value="enabled" <?php selected( $current_state_filter, 'enabled' ); ?>><?php esc_html_e( 'Enabled', 'shopify-woo-bridge' ); ?></option>
+				<option value="invalidated" <?php selected( $current_state_filter, 'invalidated' ); ?>><?php esc_html_e( 'Invalidated', 'shopify-woo-bridge' ); ?></option>
+				<option value="disabled" <?php selected( $current_state_filter, 'disabled' ); ?>><?php esc_html_e( 'Disabled', 'shopify-woo-bridge' ); ?></option>
 			</select>
 			<?php submit_button( __( 'Filter', 'shopify-woo-bridge' ), 'button', 'filter_action', false ); ?>
 		</div>
@@ -624,9 +653,23 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$this->process_bulk_action();
 
 		$per_page     = max( 1, (int) $this->get_items_per_page( 'mappings_per_page', 20 ) );
-		$total_items  = (int) self::record_count();
-		$total_pages  = max( 1, (int) ceil( $total_items / $per_page ) );
-		$current_page = min( $this->get_pagenum(), $total_pages );
+		$mapping_state = self::get_mapping_state_filter();
+
+		if ( 'all' === $mapping_state ) {
+			$total_items  = (int) self::record_count();
+			$total_pages  = max( 1, (int) ceil( $total_items / $per_page ) );
+			$current_page = min( $this->get_pagenum(), $total_pages );
+			$this->items  = self::get_mappings( $per_page, $current_page );
+		} else {
+			$base_total    = (int) self::record_count();
+			$all_items     = $base_total > 0 ? self::get_mappings( $base_total, 1 ) : array();
+			$filtered      = $this->filter_items_by_mapping_state( $all_items, $mapping_state );
+			$total_items   = count( $filtered );
+			$total_pages   = max( 1, (int) ceil( $total_items / $per_page ) );
+			$current_page  = min( $this->get_pagenum(), $total_pages );
+			$offset        = max( 0, ( $current_page - 1 ) * $per_page );
+			$this->items   = array_slice( $filtered, $offset, $per_page );
+		}
 
 		$this->set_pagination_args(
 			array(
@@ -636,10 +679,74 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			)
 		);
 
-		$this->items = self::get_mappings( $per_page, $current_page );
 		if ( ! is_array( $this->items ) ) {
 			$this->items = array();
 		}
+	}
+
+	/**
+	 * Filter rows by selected mapping state.
+	 *
+	 * @param array  $items Mapping rows.
+	 * @param string $mapping_state Mapping state filter.
+	 * @return array
+	 */
+	private function filter_items_by_mapping_state( $items, $mapping_state ) {
+		if ( 'all' === $mapping_state ) {
+			return is_array( $items ) ? $items : array();
+		}
+
+		$filtered = array();
+		foreach ( (array) $items as $item ) {
+			$is_enabled = (int) $this->get_item_value( $item, 'is_enabled', 0 );
+
+			if ( 'enabled' === $mapping_state && 1 === $is_enabled ) {
+				$filtered[] = $item;
+				continue;
+			}
+
+			if ( 'disabled' === $mapping_state && 1 !== $is_enabled ) {
+				$filtered[] = $item;
+				continue;
+			}
+
+			if ( 'invalidated' === $mapping_state && $this->is_mapping_invalidated_for_filter( $item ) ) {
+				$filtered[] = $item;
+			}
+		}
+
+		return $filtered;
+	}
+
+	/**
+	 * Determine whether a mapping should be treated as invalidated for filtering.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return bool
+	 */
+	private function is_mapping_invalidated_for_filter( $item ) {
+		$mapping_id  = absint( $this->get_item_value( $item, 'id', 0 ) );
+		$last_result = (string) get_option( 'swb_mapping_media_sync_result_' . $mapping_id, '' );
+		if ( 'invalidated' === $last_result ) {
+			return true;
+		}
+
+		$wc_sku = (string) $this->get_item_value( $item, 'wc_sku', '' );
+		if ( '' === $wc_sku ) {
+			return false;
+		}
+
+		$product_id = $this->find_wc_product_id_by_sku_for_status( $wc_sku );
+		if ( $product_id <= 0 ) {
+			return false;
+		}
+
+		$product     = wc_get_product( $product_id );
+		$last_synced = (string) get_post_meta( $product_id, 'shopify_sync_last_media_synced_at', true );
+		$last_sig    = (string) get_post_meta( $product_id, 'shopify_sync_last_media_signature', true );
+		$current_sig = $this->build_current_local_media_signature( $product );
+
+		return '' !== $last_synced && '' !== $last_sig && '' !== $current_sig && ! hash_equals( $last_sig, $current_sig );
 	}
 
 	/**
