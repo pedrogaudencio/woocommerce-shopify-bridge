@@ -142,7 +142,7 @@ class SWB_Image_Sync {
 
 		if ( $is_variation ) {
 			// Variation mappings are isolated: sync only this variation image.
-			$variation_result = $this->sync_single_variation( $wc_product_id, $shopify_product_id, $shopify_variant_id, $shopify_product, $image_map );
+			$variation_result = $this->sync_single_variation( $wc_product_id, $shopify_product_id, $shopify_variant_id, $shopify_product, $image_map, $mapping );
 			if ( ! $variation_result['success'] ) {
 				$error_message = $variation_result['message'];
 			}
@@ -259,8 +259,17 @@ class SWB_Image_Sync {
 
 		$new_hash  = md5( wp_json_encode( $hash_payload ) );
 		$last_hash = (string) get_post_meta( $parent_id, self::LAST_MEDIA_HASH_META, true );
+		$last_sig  = (string) get_post_meta( $parent_id, self::LAST_MEDIA_SIGNATURE_META, true );
+
+		$current_parent = wc_get_product( $parent_id );
+		$current_sig    = '';
+		if ( $current_parent ) {
+			$current_gallery_ids = array_map( 'absint', array_values( (array) $current_parent->get_gallery_image_ids() ) );
+			$current_sig         = $this->build_parent_local_signature( absint( $current_parent->get_image_id() ), $current_gallery_ids );
+		}
 
 		if ( '' !== $last_hash && hash_equals( $last_hash, $new_hash ) ) {
+			if ( '' !== $last_sig && '' !== $current_sig && hash_equals( $last_sig, $current_sig ) ) {
 			SWB_Logger::info(
 				'Image sync skipped for parent product because media hash is unchanged.',
 				array(
@@ -273,6 +282,14 @@ class SWB_Image_Sync {
 				'success' => true,
 				'changed' => false,
 				'message' => '',
+			);
+			}
+
+			$this->log_diagnostic_info(
+				'Parent media hash is unchanged but local media signature drifted; forcing re-apply.',
+				array(
+					'parent_id' => absint( $parent_id ),
+				)
 			);
 		}
 
@@ -346,9 +363,10 @@ class SWB_Image_Sync {
 	 * @param string $shopify_variant_id Shopify variant ID.
 	 * @param array  $shopify_product Shopify product payload.
 	 * @param array  $image_map Shopify image map.
+	 * @param array|object $mapping Mapping row.
 	 * @return array
 	 */
-	private function sync_single_variation( $variation_id, $shopify_product_id, $shopify_variant_id, $shopify_product, $image_map ) {
+	private function sync_single_variation( $variation_id, $shopify_product_id, $shopify_variant_id, $shopify_product, $image_map, $mapping ) {
 		$variants      = isset( $shopify_product['variants'] ) && is_array( $shopify_product['variants'] ) ? $shopify_product['variants'] : array();
 		$variant_by_id = array();
 
@@ -415,9 +433,19 @@ class SWB_Image_Sync {
 
 		$new_hash  = md5( wp_json_encode( $variant_hash_payload ) );
 		$last_hash = (string) get_post_meta( $variation_id, self::LAST_MEDIA_HASH_META, true );
+		$last_sig  = (string) get_post_meta( $variation_id, self::LAST_MEDIA_SIGNATURE_META, true );
+
+		$current_variation = wc_get_product( $variation_id );
+		$current_sig       = '';
+		if ( $current_variation && $current_variation->is_type( 'variation' ) ) {
+			$current_gallery_ids = array_map( 'absint', array_values( (array) $current_variation->get_gallery_image_ids() ) );
+			$current_sig         = $this->build_variation_local_signature( absint( $current_variation->get_image_id() ), $current_gallery_ids );
+		}
 		
-		// If hash matches, no changes needed.
+		// If hash matches, no changes needed to variation.
+		// But still check if parent needs media from this variation.
 		if ( '' !== $last_hash && hash_equals( $last_hash, $new_hash ) ) {
+			if ( '' !== $last_sig && '' !== $current_sig && hash_equals( $last_sig, $current_sig ) ) {
 			SWB_Logger::info(
 				'Image sync skipped for variation because media hash is unchanged.',
 				array(
@@ -427,10 +455,26 @@ class SWB_Image_Sync {
 				)
 			);
 
+			$parent_updated = false;
+			$wc_product = wc_get_product( $variation_id );
+			if ( $wc_product && $wc_product->is_type( 'variation' ) ) {
+				$variation_image_id = absint( $wc_product->get_image_id() );
+				$variation_gallery_ids = $wc_product->get_gallery_image_ids();
+				$parent_updated = $this->maybe_assign_parent_media_from_variation( $variation_id, $variation_image_id, $variation_gallery_ids, $mapping );
+			}
+
 			return array(
 				'success' => true,
-				'changed' => false,
+				'changed' => (bool) $parent_updated,
 				'message' => '',
+			);
+			}
+
+			$this->log_diagnostic_info(
+				'Variation media hash is unchanged but local media signature drifted; forcing re-apply.',
+				array(
+					'variation_id' => absint( $variation_id ),
+				)
 			);
 		}
 
@@ -480,6 +524,8 @@ class SWB_Image_Sync {
 			$wc_product->save();
 		}
 
+		$this->maybe_assign_parent_media_from_variation( $variation_id, $attachment_id, $variation_gallery_attachment_ids, $mapping );
+
 		// Update tracking metadata.
 		$current_variation_image_id = absint( $wc_product ? $wc_product->get_image_id() : 0 );
 		update_post_meta( $variation_id, self::LAST_MEDIA_HASH_META, $new_hash );
@@ -490,6 +536,162 @@ class SWB_Image_Sync {
 			'success' => true,
 			'changed' => true,
 			'message' => '',
+		);
+	}
+
+	/**
+	 * Assign variable parent media from variation media when fallback conditions are met.
+	 *
+	 * @param int          $variation_id Variation product ID.
+	 * @param int          $variation_image_id Variation primary image attachment ID.
+	 * @param array        $variation_gallery_ids Variation gallery attachment IDs.
+	 * @param array|object $mapping Mapping row.
+	 * @return bool True when parent media was updated.
+	 */
+	private function maybe_assign_parent_media_from_variation( $variation_id, $variation_image_id, $variation_gallery_ids, $mapping ) {
+		$variation_id = absint( $variation_id );
+		if ( $variation_id <= 0 ) {
+			$this->log_diagnostic_info( 'Parent fallback: Invalid variation ID.', array( 'variation_id' => $variation_id ) );
+			return false;
+		}
+
+		$variation = wc_get_product( $variation_id );
+		if ( ! $variation || ! $variation->is_type( 'variation' ) ) {
+			$this->log_diagnostic_info( 'Parent fallback: Could not load variation product.', array( 'variation_id' => $variation_id ) );
+			return false;
+		}
+
+		$parent_id = absint( $variation->get_parent_id() );
+		if ( $parent_id <= 0 ) {
+			$this->log_diagnostic_info( 'Parent fallback: Invalid parent ID.', array( 'variation_id' => $variation_id, 'parent_id' => $parent_id ) );
+			return false;
+		}
+
+		$parent = wc_get_product( $parent_id );
+		if ( ! $parent || ! $parent->is_type( 'variable' ) ) {
+			$this->log_diagnostic_info( 'Parent fallback: Parent is not a variable product.', array( 'parent_id' => $parent_id ) );
+			return false;
+		}
+
+		$inventory_item_id = trim( (string) $this->get_mapping_value( $mapping, 'shopify_item_id', '' ) );
+
+		$parent_image_id    = absint( $parent->get_image_id() );
+		$parent_gallery_ids = array_values( array_filter( array_map( 'absint', (array) $parent->get_gallery_image_ids() ) ) );
+
+		$source_payload = $this->get_parent_fallback_source_media(
+			$parent,
+			$variation_id,
+			$variation_image_id,
+			$variation_gallery_ids
+		);
+
+		$source_ids          = isset( $source_payload['source_ids'] ) && is_array( $source_payload['source_ids'] ) ? $source_payload['source_ids'] : array();
+		$source_variation_id = isset( $source_payload['source_variation_id'] ) ? absint( $source_payload['source_variation_id'] ) : 0;
+		if ( empty( $source_ids ) ) {
+			$this->log_diagnostic_info(
+				'Parent fallback: No source images found in variation.',
+				array( 'parent_id' => $parent_id, 'variation_id' => $variation_id )
+			);
+			return false;
+		}
+
+		$candidate_featured_id = absint( $source_ids[0] );
+		$candidate_gallery_ids = array_values(
+			array_filter(
+				$source_ids,
+				function( $attachment_id ) use ( $candidate_featured_id ) {
+					return absint( $attachment_id ) !== $candidate_featured_id;
+				}
+			)
+		);
+
+		$parent_has_no_featured_image = $parent_image_id <= 0;
+		$parent_has_no_gallery        = empty( $parent_gallery_ids );
+		$inventory_missing            = '' === $inventory_item_id;
+		$parent_media_matches_source  = $parent_image_id === $candidate_featured_id && $parent_gallery_ids === $candidate_gallery_ids;
+
+		$this->log_diagnostic_info(
+			'Parent fallback: Checking conditions.',
+			array(
+				'parent_id'                 => $parent_id,
+				'variation_id'              => $variation_id,
+				'parent_has_no_featured_image' => $parent_has_no_featured_image,
+				'parent_has_no_gallery'     => $parent_has_no_gallery,
+				'inventory_missing'         => $inventory_missing,
+				'parent_media_matches_source' => $parent_media_matches_source,
+				'source_variation_id'      => $source_variation_id,
+				'parent_image_id'           => $parent_image_id,
+				'parent_gallery_count'      => count( $parent_gallery_ids ),
+				'inventory_item_id'         => $inventory_item_id,
+				'source_image_id'           => isset( $source_ids[0] ) ? absint( $source_ids[0] ) : 0,
+				'source_gallery_count'      => max( 0, count( $source_ids ) - 1 ),
+			)
+		);
+
+		if ( ! ( $parent_has_no_featured_image || $parent_has_no_gallery || $inventory_missing ) && $parent_media_matches_source ) {
+			$this->log_diagnostic_info(
+				'Parent fallback: Conditions not met. Parent media already matches variation-derived media.',
+				array( 'parent_id' => $parent_id, 'variation_id' => $variation_id )
+			);
+			return false;
+		}
+
+		$parent_featured_id = $candidate_featured_id;
+		$parent_gallery_ids = $candidate_gallery_ids;
+
+		set_post_thumbnail( $parent_id, $parent_featured_id );
+		update_post_meta( $parent_id, '_product_image_gallery', implode( ',', array_map( 'absint', $parent_gallery_ids ) ) );
+
+		SWB_Logger::info(
+			'Assigned variable parent media from first synced variation image.',
+			array(
+				'parent_id'         => $parent_id,
+				'variation_id'      => $variation_id,
+				'source_variation_id' => $source_variation_id,
+				'parent_featured_id' => $parent_featured_id,
+				'parent_gallery_count' => count( $parent_gallery_ids ),
+				'inventory_missing' => $inventory_missing,
+			)
+		);
+
+		return true;
+	}
+
+	/**
+	 * Resolve media source for parent fallback from the first variation under the parent.
+	 *
+	 * @param WC_Product $parent Parent variable product.
+	 * @param int        $fallback_variation_id Current variation ID.
+	 * @param int        $fallback_image_id Current variation image ID.
+	 * @param array      $fallback_gallery_ids Current variation gallery IDs.
+	 * @return array{source_ids: array, source_variation_id: int}
+	 */
+	private function get_parent_fallback_source_media( $parent, $fallback_variation_id, $fallback_image_id, $fallback_gallery_ids ) {
+		$children = method_exists( $parent, 'get_children' ) ? array_values( array_filter( array_map( 'absint', (array) $parent->get_children() ) ) ) : array();
+
+		foreach ( $children as $child_id ) {
+			$child = wc_get_product( $child_id );
+			if ( ! $child || ! $child->is_type( 'variation' ) ) {
+				continue;
+			}
+
+			$child_image_id    = absint( $child->get_image_id() );
+			$child_gallery_ids = array_values( array_filter( array_map( 'absint', (array) $child->get_gallery_image_ids() ) ) );
+			$source_ids        = array_values( array_unique( array_filter( array_merge( array( $child_image_id ), $child_gallery_ids ) ) ) );
+
+			if ( ! empty( $source_ids ) ) {
+				return array(
+					'source_ids'          => $source_ids,
+					'source_variation_id' => $child_id,
+				);
+			}
+		}
+
+		$fallback_source_ids = array_values( array_unique( array_filter( array_merge( array( absint( $fallback_image_id ) ), array_values( array_map( 'absint', (array) $fallback_gallery_ids ) ) ) ) ) );
+
+		return array(
+			'source_ids'          => $fallback_source_ids,
+			'source_variation_id' => absint( $fallback_variation_id ),
 		);
 	}
 
@@ -971,6 +1173,23 @@ class SWB_Image_Sync {
 		}
 
 		return $default;
+	}
+
+	/**
+	 * Log diagnostic-only image-sync info when explicitly enabled.
+	 *
+	 * @param string $message Log message.
+	 * @param array  $context Log context.
+	 * @return void
+	 */
+	private function log_diagnostic_info( $message, $context = array() ) {
+		$enabled = 'yes' === get_option( 'swb_image_sync_diagnostic_logging', 'no' );
+		$enabled = apply_filters( 'swb_image_sync_diagnostic_logging_enabled', $enabled, $message, $context );
+		if ( ! $enabled ) {
+			return;
+		}
+
+		SWB_Logger::info( $message, $context );
 	}
 }
 

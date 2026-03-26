@@ -164,7 +164,7 @@ class SWB_Admin_Mappings {
 				<input type="hidden" name="swb_product_type" value="<?php echo esc_attr( $current_product_type ); ?>" />
 				<input type="hidden" name="swb_bulk_sync_images" value="1" />
 				<input type="hidden" name="swb_override_all_variations" value="0" id="swb-override-all-flag" />
-				<?php submit_button( __( 'Sync images', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
+				<?php submit_button( __( 'Sync images', 'shopify-woo-bridge' ), 'secondary', 'swb_bulk_sync_images_submit', false ); ?>
 			</form>
 			<p class="description" style="margin:8px 0 0;">
 				<?php esc_html_e( 'Bulk stock sync uses Shopify inventory levels and sums available quantity across locations per inventory item.', 'shopify-woo-bridge' ); ?>
@@ -173,6 +173,21 @@ class SWB_Admin_Mappings {
 		<script type="text/javascript">
 			(function($) {
 				'use strict';
+
+				function submitSyncImagesForm($form, overrideAll) {
+					var overrideFlagInput = $form.find('#swb-override-all-flag');
+					var formEl = $form.length ? $form.get(0) : null;
+					overrideFlagInput.val(overrideAll ? '1' : '0');
+					$form.data('swbForceSubmit', 1);
+					if (formEl && typeof formEl.requestSubmit === 'function') {
+						formEl.requestSubmit();
+						return;
+					}
+
+					if (formEl && typeof HTMLFormElement !== 'undefined' && HTMLFormElement.prototype && typeof HTMLFormElement.prototype.submit === 'function') {
+						HTMLFormElement.prototype.submit.call(formEl);
+					}
+				}
 				
 				/**
 				 * Handle bulk sync images form submission with three-button confirmation dialog.
@@ -180,6 +195,12 @@ class SWB_Admin_Mappings {
 				$('#swb-bulk-sync-images-form').on('submit', function(e) {
 					var $form = $(this);
 					var overrideFlagInput = $form.find('#swb-override-all-flag');
+					var forceSubmit = 1 === parseInt($form.data('swbForceSubmit'), 10);
+
+					if (forceSubmit) {
+						$form.data('swbForceSubmit', 0);
+						return true;
+					}
 					
 					// If override flag is already set, proceed normally.
 					if ('1' === overrideFlagInput.val()) {
@@ -193,6 +214,17 @@ class SWB_Admin_Mappings {
 					// For now, show the dialog regardless since the backend will check.
 					// The dialog will only be shown if there are actual variations with existing data.
 					
+					if (typeof $.fn.dialog !== 'function') {
+						var proceed = window.confirm('<?php echo esc_js( __( 'Some variations already have additional images. Continue?', 'shopify-woo-bridge' ) ); ?>');
+						if (!proceed) {
+							e.preventDefault();
+							return false;
+						}
+
+						overrideFlagInput.val('0');
+						return true;
+					}
+
 					e.preventDefault();
 					
 					var dialogHtml = '<div id="swb-sync-confirm-dialog" style="display:none;">' +
@@ -211,6 +243,12 @@ class SWB_Admin_Mappings {
 						width: 450,
 						draggable: false,
 						resizable: false,
+						open: function() {
+							if ($('.ui-widget-overlay').length) {
+								$('.ui-widget-overlay').css('z-index', 100000);
+							}
+							$(this).closest('.ui-dialog').css('z-index', 100001);
+						},
 						close: function() {
 							$(this).dialog('destroy').remove();
 						},
@@ -227,8 +265,7 @@ class SWB_Admin_Mappings {
 								text: '<?php echo esc_js( __( 'OK - Override This Time', 'shopify-woo-bridge' ) ); ?>',
 								class: 'button',
 								click: function() {
-									overrideFlagInput.val('0');
-									$form.off('submit').submit();
+									submitSyncImagesForm($form, false);
 									$dialog.dialog('close');
 								}
 							},
@@ -236,13 +273,16 @@ class SWB_Admin_Mappings {
 								text: '<?php echo esc_js( __( 'OK for All', 'shopify-woo-bridge' ) ); ?>',
 								class: 'button button-primary',
 								click: function() {
-									overrideFlagInput.val('1');
-									$form.off('submit').submit();
+									submitSyncImagesForm($form, true);
 									$dialog.dialog('close');
 								}
 							}
 						]
 					});
+					
+					if (!$dialog.hasClass('ui-dialog-content')) {
+						submitSyncImagesForm($form, false);
+					}
 				});
 			})(jQuery);
 		</script>
@@ -674,6 +714,8 @@ class SWB_Admin_Mappings {
 				wp_die( 'Security check failed.' );
 			}
 
+			SWB_Logger::info( 'Top Sync Images button submitted. Starting resumable bulk image sync job.' );
+
 			$current_product_type = $this->normalize_product_type_filter( isset( $_POST['swb_product_type'] ) ? sanitize_key( wp_unslash( $_POST['swb_product_type'] ) ) : 'all' );
 			$this->start_bulk_image_sync_job( $current_product_type );
 			exit;
@@ -712,15 +754,14 @@ class SWB_Admin_Mappings {
 		$option_key = $this->get_bulk_image_sync_job_option_key( $job_token );
 
 		$state = array(
-			'product_type'                      => $this->normalize_product_type_filter( $product_type ),
-			'cursor_shopify_product_id'         => '',
-			'cursor_mapping_id'                 => 0,
-			'last_processed_shopify_product_id' => '',
-			'processed_groups'                  => 0,
-			'changed_groups'                    => 0,
-			'unchanged_groups'                  => 0,
-			'failed_groups'                     => 0,
-			'skipped_groups'                    => 0,
+			'product_type'              => $this->normalize_product_type_filter( $product_type ),
+			'cursor_shopify_product_id' => '',
+			'cursor_mapping_id'         => 0,
+			'processed'                 => 0,
+			'changed'                   => 0,
+			'unchanged'                 => 0,
+			'failed'                    => 0,
+			'skipped'                   => 0,
 		);
 
 		update_option( $option_key, $state, false );
@@ -774,10 +815,11 @@ class SWB_Admin_Mappings {
 
 				$shopify_product_id = $state['cursor_shopify_product_id'];
 				$wc_sku             = isset( $row->wc_sku ) ? trim( (string) $row->wc_sku ) : '';
+				$mapping_id         = isset( $row->id ) ? absint( $row->id ) : 0;
 
 				if ( '' === $shopify_product_id ) {
-					$this->set_mapping_media_sync_status( absint( $row->id ), 'error', __( 'Missing Shopify Product ID.', 'shopify-woo-bridge' ) );
-					$state['skipped_groups']++;
+					$this->set_mapping_media_sync_status( $mapping_id, 'error', __( 'Missing Shopify Product ID.', 'shopify-woo-bridge' ) );
+					$state['skipped'] = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
 					continue;
 				}
 
@@ -785,35 +827,25 @@ class SWB_Admin_Mappings {
 					continue;
 				}
 
-				if ( isset( $state['last_processed_shopify_product_id'] ) && (string) $state['last_processed_shopify_product_id'] === $shopify_product_id ) {
-					continue;
-				}
-
-				$state['last_processed_shopify_product_id'] = $shopify_product_id;
-				$state['processed_groups']++;
+				$state['processed'] = isset( $state['processed'] ) ? intval( $state['processed'] ) + 1 : 1;
 				$processed_this_request++;
 
-				$result     = $sync_service->sync_images_for_mapping( $row );
-				$group_rows = SWB_DB::get_mappings_by_shopify_product_id( $shopify_product_id );
+				$result = $sync_service->sync_images_for_mapping( $row );
 
 				if ( ! empty( $result['success'] ) ) {
 					if ( ! empty( $result['changed'] ) ) {
-						$state['changed_groups']++;
+						$state['changed'] = isset( $state['changed'] ) ? intval( $state['changed'] ) + 1 : 1;
 						$status = 'changed';
 					} else {
-						$state['unchanged_groups']++;
+						$state['unchanged'] = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) + 1 : 1;
 						$status = 'unchanged';
 					}
 
-					foreach ( $group_rows as $group_row ) {
-						$this->set_mapping_media_sync_status( absint( $group_row->id ), $status, '' );
-					}
+					$this->set_mapping_media_sync_status( $mapping_id, $status, '' );
 				} else {
-					$state['failed_groups']++;
+					$state['failed'] = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
 					$error_message = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
-					foreach ( $group_rows as $group_row ) {
-						$this->set_mapping_media_sync_status( absint( $group_row->id ), 'error', $error_message );
-					}
+					$this->set_mapping_media_sync_status( $mapping_id, 'error', $error_message );
 				}
 
 				if ( $processed_this_request >= $batch_size || $rows_scanned >= $max_rows_scanned ) {
@@ -830,15 +862,15 @@ class SWB_Admin_Mappings {
 
 		delete_option( $option_key );
 
-		$notice_type = intval( $state['failed_groups'] ) > 0 ? 'error' : 'success';
+		$notice_type = intval( isset( $state['failed'] ) ? $state['failed'] : 0 ) > 0 ? 'error' : 'success';
 		$message     = sprintf(
-			/* translators: 1: processed groups, 2: changed groups, 3: unchanged groups, 4: failed groups, 5: skipped groups. */
-			__( 'Bulk image sync complete. Processed groups: %1$d, Changed: %2$d, Unchanged: %3$d, Failed: %4$d, Skipped: %5$d.', 'shopify-woo-bridge' ),
-			intval( $state['processed_groups'] ),
-			intval( $state['changed_groups'] ),
-			intval( $state['unchanged_groups'] ),
-			intval( $state['failed_groups'] ),
-			intval( $state['skipped_groups'] )
+			/* translators: 1: processed mappings, 2: changed mappings, 3: unchanged mappings, 4: failed mappings, 5: skipped mappings. */
+			__( 'Bulk image sync complete. Processed: %1$d, Changed: %2$d, Unchanged: %3$d, Failed: %4$d, Skipped: %5$d.', 'shopify-woo-bridge' ),
+			intval( isset( $state['processed'] ) ? $state['processed'] : 0 ),
+			intval( isset( $state['changed'] ) ? $state['changed'] : 0 ),
+			intval( isset( $state['unchanged'] ) ? $state['unchanged'] : 0 ),
+			intval( isset( $state['failed'] ) ? $state['failed'] : 0 ),
+			intval( isset( $state['skipped'] ) ? $state['skipped'] : 0 )
 		);
 
 		$this->redirect_bulk_action_notice( $notice_type, $message, $product_type );

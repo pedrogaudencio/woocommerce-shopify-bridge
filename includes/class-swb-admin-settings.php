@@ -350,6 +350,13 @@ if ( class_exists( 'WC_Settings_Page', false ) ) {
 					'type'    => 'checkbox',
 				),
 				array(
+					'title'   => __( 'Image Sync Debug Logs', 'shopify-woo-bridge' ),
+					'desc'    => __( 'Enable verbose image-sync diagnostic logs (fallback decisions, hash/signature drift checks).', 'shopify-woo-bridge' ),
+					'id'      => 'swb_image_sync_diagnostic_logging',
+					'default' => 'no',
+					'type'    => 'checkbox',
+				),
+				array(
 					'title'             => __( 'Shopify API min request interval (seconds)', 'shopify-woo-bridge' ),
 					'desc'              => __( 'Minimum spacing between Shopify API calls. Increase this if your store is frequently rate limited.', 'shopify-woo-bridge' ),
 					'id'                => 'swb_shopify_min_request_interval_seconds',
