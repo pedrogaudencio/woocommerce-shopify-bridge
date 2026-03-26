@@ -106,16 +106,9 @@ class SWB_REST_Controller extends WP_REST_Controller {
 	 * @return true|WP_Error True if the request has read access, WP_Error object otherwise.
 	 */
 	public function verify_shopify_signature( $request ) {
-		// 1. Check if the global kill switch is active.
-		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
-			// Even if disabled, we return 200 OK so Shopify doesn't disable the webhook due to failures.
-			// The actual processing will stop later, but here we just ensure the endpoint is responsive.
-			// Returning a WP_Error here would send a 4xx/5xx back to Shopify.
-			// Returning true allows it to proceed to process_webhook, which can handle the disabled state.
-			return true;
-		}
-
-		// 2. Retrieve the stored secret.
+		// Always enforce signature verification at the permission layer.
+		// Disabled-state behavior is handled by the endpoint callbacks.
+		// 1. Retrieve the stored secret.
 		$secret = get_option( 'swb_webhook_secret', '' );
 		if ( empty( $secret ) ) {
 			SWB_Logger::error( 'Webhook rejected: Shopify webhook secret is not configured.' );
@@ -126,7 +119,7 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			);
 		}
 
-		// 3. Get the header signature.
+		// 2. Get the header signature.
 		$hmac_header = $request->get_header( 'x_shopify_hmac_sha256' );
 		if ( empty( $hmac_header ) ) {
 			SWB_Logger::warning( 'Webhook rejected: Missing X-Shopify-Hmac-Sha256 header.' );
@@ -137,11 +130,11 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			);
 		}
 
-		// 4. Calculate our own signature.
+		// 3. Calculate our own signature.
 		$raw_payload = $request->get_body();
 		$calculated_hmac = base64_encode( hash_hmac( 'sha256', $raw_payload, $secret, true ) );
 
-		// 5. Compare using timing-safe string comparison.
+		// 4. Compare using timing-safe string comparison.
 		if ( ! hash_equals( $calculated_hmac, $hmac_header ) ) {
 			SWB_Logger::error( 'Webhook rejected: Invalid signature.' );
 			return new WP_Error(
@@ -162,15 +155,6 @@ class SWB_REST_Controller extends WP_REST_Controller {
 	 * @return true|WP_Error True if the request has permission, WP_Error object otherwise.
 	 */
 	public function verify_api_permission( $request ) {
-		if ( 'yes' === get_option( 'swb_global_enable', 'no' ) ) {
-			// Keep endpoint reachable for operational checks even when sync is disabled.
-			return true;
-		}
-
-		if ( $this->is_stock_api_kill_switch_enabled() ) {
-			// Keep endpoint reachable for operational checks even when stock API is disabled.
-			return true;
-		}
 
 		// Allow WordPress administrators.
 		if ( current_user_can( 'manage_woocommerce' ) ) {
