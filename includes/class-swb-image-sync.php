@@ -22,6 +22,13 @@ class SWB_Image_Sync {
 	const ATTACHMENT_SOURCE_META = '_swb_shopify_source_url';
 
 	/**
+	 * Canonicalized source URL meta key for imported attachments.
+	 *
+	 * @var string
+	 */
+	const ATTACHMENT_SOURCE_CANONICAL_META = '_swb_shopify_source_url_canonical';
+
+	/**
 	 * Last media hash meta key.
 	 *
 	 * @var string
@@ -254,6 +261,14 @@ class SWB_Image_Sync {
 		$last_hash = (string) get_post_meta( $parent_id, self::LAST_MEDIA_HASH_META, true );
 
 		if ( '' !== $last_hash && hash_equals( $last_hash, $new_hash ) ) {
+			SWB_Logger::info(
+				'Image sync skipped for parent product because media hash is unchanged.',
+				array(
+					'parent_id'          => absint( $parent_id ),
+					'shopify_product_id' => (string) $shopify_product_id,
+				)
+			);
+
 			return array(
 				'success' => true,
 				'changed' => false,
@@ -403,6 +418,15 @@ class SWB_Image_Sync {
 		
 		// If hash matches, no changes needed.
 		if ( '' !== $last_hash && hash_equals( $last_hash, $new_hash ) ) {
+			SWB_Logger::info(
+				'Image sync skipped for variation because media hash is unchanged.',
+				array(
+					'variation_id'       => absint( $variation_id ),
+					'shopify_product_id' => (string) $shopify_product_id,
+					'shopify_variant_id' => (string) $shopify_variant_id,
+				)
+			);
+
 			return array(
 				'success' => true,
 				'changed' => false,
@@ -533,6 +557,15 @@ class SWB_Image_Sync {
 			$new_hash  = md5( wp_json_encode( $variant_hash_payload ) );
 			$last_hash = (string) get_post_meta( $wc_product_id, self::LAST_MEDIA_HASH_META, true );
 			if ( '' !== $last_hash && hash_equals( $last_hash, $new_hash ) ) {
+				SWB_Logger::info(
+					'Image sync skipped for mapped variation because media hash is unchanged.',
+					array(
+						'variation_id'       => absint( $wc_product_id ),
+						'shopify_product_id' => (string) $shopify_product_id,
+						'shopify_variant_id' => (string) $shopify_variant_id,
+					)
+				);
+
 				continue;
 			}
 
@@ -655,8 +688,26 @@ class SWB_Image_Sync {
 			return new WP_Error( 'swb_disallowed_image_url', __( 'Image URL is not from an allowed Shopify host.', 'shopify-woo-bridge' ) );
 		}
 
-		$existing = $this->find_attachment_by_source_url( $url );
+		$canonical_url = $this->build_canonical_shopify_image_url( $url );
+		$match_source  = 'source_meta';
+
+		$existing = $this->find_attachment_by_source_url( $url, $canonical_url );
+		if ( $existing <= 0 ) {
+			$match_source = 'guid';
+			$existing = $this->find_attachment_by_guid_url( $url, $canonical_url );
+		}
+
 		if ( $existing > 0 ) {
+			$this->maybe_persist_attachment_source_meta( $existing, $url, $canonical_url );
+			SWB_Logger::info(
+				'Image sync reused local attachment. Skipped Shopify download.',
+				array(
+					'attachment_id' => absint( $existing ),
+					'parent_post_id' => absint( $parent_post_id ),
+					'match_source'  => $match_source,
+					'source_url'    => $url,
+				)
+			);
 			return $existing;
 		}
 
@@ -683,8 +734,45 @@ class SWB_Image_Sync {
 		}
 
 		update_post_meta( $attachment_id, self::ATTACHMENT_SOURCE_META, $url );
+		if ( '' !== $canonical_url ) {
+			update_post_meta( $attachment_id, self::ATTACHMENT_SOURCE_CANONICAL_META, $canonical_url );
+		}
+
+		SWB_Logger::info(
+			'Image sync downloaded Shopify image and created attachment.',
+			array(
+				'attachment_id' => $attachment_id,
+				'parent_post_id' => absint( $parent_post_id ),
+				'source_url'    => $url,
+			)
+		);
 
 		return $attachment_id;
+	}
+
+	/**
+	 * Persist source metadata for reused attachments when values are missing.
+	 *
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $url Original source URL.
+	 * @param string $canonical_url Canonicalized source URL.
+	 * @return void
+	 */
+	private function maybe_persist_attachment_source_meta( $attachment_id, $url, $canonical_url ) {
+		$attachment_id = absint( $attachment_id );
+		if ( $attachment_id <= 0 ) {
+			return;
+		}
+
+		$current_url = trim( (string) get_post_meta( $attachment_id, self::ATTACHMENT_SOURCE_META, true ) );
+		if ( '' === $current_url ) {
+			update_post_meta( $attachment_id, self::ATTACHMENT_SOURCE_META, $url );
+		}
+
+		$current_canonical_url = trim( (string) get_post_meta( $attachment_id, self::ATTACHMENT_SOURCE_CANONICAL_META, true ) );
+		if ( '' !== $canonical_url && '' === $current_canonical_url ) {
+			update_post_meta( $attachment_id, self::ATTACHMENT_SOURCE_CANONICAL_META, $canonical_url );
+		}
 	}
 
 	/**
@@ -693,8 +781,28 @@ class SWB_Image_Sync {
 	 * @param string $url Source URL.
 	 * @return int
 	 */
-	private function find_attachment_by_source_url( $url ) {
+	private function find_attachment_by_source_url( $url, $canonical_url = '' ) {
 		global $wpdb;
+
+		$canonical_url = trim( (string) $canonical_url );
+		if ( '' !== $canonical_url ) {
+			$attachment_id = $wpdb->get_var(
+				$wpdb->prepare(
+					"
+					SELECT post_id
+					FROM {$wpdb->postmeta}
+					WHERE meta_key = %s AND meta_value = %s
+					LIMIT 1
+					",
+					self::ATTACHMENT_SOURCE_CANONICAL_META,
+					$canonical_url
+				)
+			);
+
+			if ( absint( $attachment_id ) > 0 ) {
+				return absint( $attachment_id );
+			}
+		}
 
 		$attachment_id = $wpdb->get_var(
 			$wpdb->prepare(
@@ -710,6 +818,61 @@ class SWB_Image_Sync {
 		);
 
 		return absint( $attachment_id );
+	}
+
+	/**
+	 * Find existing attachment by matching original/canonical URL against attachment guid.
+	 *
+	 * @param string $url Source URL.
+	 * @param string $canonical_url Canonical source URL.
+	 * @return int
+	 */
+	private function find_attachment_by_guid_url( $url, $canonical_url = '' ) {
+		global $wpdb;
+
+		$urls_to_try = array_values( array_unique( array_filter( array( trim( (string) $url ), trim( (string) $canonical_url ) ) ) ) );
+		foreach ( $urls_to_try as $candidate_url ) {
+			$attachment_id = $wpdb->get_var(
+				$wpdb->prepare(
+					"
+					SELECT ID
+					FROM {$wpdb->posts}
+					WHERE post_type = 'attachment' AND guid = %s
+					LIMIT 1
+					",
+					$candidate_url
+				)
+			);
+
+			if ( absint( $attachment_id ) > 0 ) {
+				return absint( $attachment_id );
+			}
+		}
+
+		return 0;
+	}
+
+	/**
+	 * Build canonical Shopify image URL for local matching across URL variants.
+	 *
+	 * @param string $url Source URL.
+	 * @return string
+	 */
+	private function build_canonical_shopify_image_url( $url ) {
+		$parts = wp_parse_url( trim( (string) $url ) );
+		if ( ! is_array( $parts ) ) {
+			return '';
+		}
+
+		$host = isset( $parts['host'] ) ? strtolower( (string) $parts['host'] ) : '';
+		$path = isset( $parts['path'] ) ? (string) $parts['path'] : '';
+		if ( '' === $host || '' === $path ) {
+			return '';
+		}
+
+		$path = '/' . ltrim( $path, '/' );
+
+		return 'https://' . $host . $path;
 	}
 
 	/**
