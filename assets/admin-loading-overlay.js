@@ -4,6 +4,7 @@
 	var overlayVisible = false;
 	var hideTimer = null;
 	var localized = window.swbLoadingOverlay || {};
+	var bulkImageSyncStorageKey = 'swbBulkImageSyncInProgress';
 
 	function getLocalizedString(key, fallback) {
 		if (localized && typeof localized[key] === 'string' && localized[key].length > 0) {
@@ -44,6 +45,66 @@
 
 		document.body.appendChild(overlay);
 		return overlay;
+	}
+
+	function getQueryParam(name) {
+		if (typeof window.URLSearchParams === 'undefined') {
+			return '';
+		}
+
+		var params = new window.URLSearchParams(window.location.search || '');
+		return params.get(name) || '';
+	}
+
+	function isBulkImageSyncContinuation() {
+		return '1' === getQueryParam('swb_bulk_sync_images_continue') || '1' === getQueryParam('swb_bulk_sync_images_selected_continue');
+	}
+
+	function isBulkImageSyncCompleteNotice() {
+		if ('1' !== getQueryParam('swb_notice')) {
+			return false;
+		}
+
+		var message = getQueryParam('swb_message');
+		return message.indexOf('Bulk image sync complete') !== -1;
+	}
+
+	function getBulkImageSyncState() {
+		try {
+			return window.sessionStorage.getItem(bulkImageSyncStorageKey) === '1';
+		} catch (e) {
+			return false;
+		}
+	}
+
+	function setBulkImageSyncState(active) {
+		try {
+			if (active) {
+				window.sessionStorage.setItem(bulkImageSyncStorageKey, '1');
+				return;
+			}
+
+			window.sessionStorage.removeItem(bulkImageSyncStorageKey);
+		} catch (e) {
+			// Ignore storage access failures.
+		}
+	}
+
+	function isBulkImageSyncSubmit(form, bulkActionContext) {
+		if (!(form instanceof HTMLFormElement)) {
+			return false;
+		}
+
+		var topSyncInput = form.querySelector('input[name="swb_bulk_sync_images"]');
+		if (topSyncInput && topSyncInput.value === '1') {
+			return true;
+		}
+
+		return !!(bulkActionContext && bulkActionContext.value === 'bulk-sync-images');
+	}
+
+	function getBulkImageSyncContinuationMessage() {
+		return getLocalizedString('bulkImageSyncContinuationMessage', 'Syncing images... batch in progress. Please keep this page open until completion.');
 	}
 
 	function showOverlay(customMessage) {
@@ -106,6 +167,10 @@
 	}
 
 	function hideOverlay() {
+		if (getBulkImageSyncState() && isBulkImageSyncContinuation()) {
+			return;
+		}
+
 		var overlay = document.getElementById('swb-loading-overlay');
 		if (overlay) {
 			overlay.classList.remove('is-active');
@@ -149,19 +214,38 @@
 			return;
 		}
 
+		var bulkActionContext = getBulkActionContext(form);
+		if (isBulkImageSyncSubmit(form, bulkActionContext)) {
+			setBulkImageSyncState(true);
+			showOverlay(getBulkImageSyncContinuationMessage());
+			return;
+		}
+
 		if (form.getAttribute('data-swb-long-action') === '1') {
 			showOverlay(form.getAttribute('data-swb-loading-message'));
 			return;
 		}
 
-		var bulkActionContext = getBulkActionContext(form);
 		if (bulkActionContext) {
 			showOverlay(bulkActionContext.message);
 		}
 	});
 
+	if (isBulkImageSyncContinuation() || getBulkImageSyncState()) {
+		showOverlay(getBulkImageSyncContinuationMessage());
+	}
+
+	if (isBulkImageSyncCompleteNotice()) {
+		setBulkImageSyncState(false);
+		hideOverlay();
+	}
+
 	window.addEventListener('pageshow', hideOverlay);
 	window.addEventListener('focus', function () {
+		if (getBulkImageSyncState() && isBulkImageSyncContinuation()) {
+			return;
+		}
+
 		if (overlayVisible) {
 			window.setTimeout(hideOverlay, 200);
 		}
