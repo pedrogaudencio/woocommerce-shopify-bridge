@@ -3,6 +3,29 @@
 
 	var overlayVisible = false;
 	var hideTimer = null;
+	var localized = window.swbLoadingOverlay || {};
+
+	function getLocalizedString(key, fallback) {
+		if (localized && typeof localized[key] === 'string' && localized[key].length > 0) {
+			return localized[key];
+		}
+
+		return fallback;
+	}
+
+	function interpolateTokens(template, values) {
+		if (!template || !values) {
+			return template;
+		}
+
+		return template.replace(/%([a-zA-Z0-9_]+)%/g, function (match, token) {
+			if (Object.prototype.hasOwnProperty.call(values, token)) {
+				return String(values[token]);
+			}
+
+			return match;
+		});
+	}
 
 	function ensureOverlay() {
 		var overlay = document.getElementById('swb-loading-overlay');
@@ -23,10 +46,10 @@
 		return overlay;
 	}
 
-	function showOverlay() {
+	function showOverlay(customMessage) {
 		var overlay = ensureOverlay();
 		var messageNode = overlay.querySelector('.swb-loading-message');
-		var message = (window.swbLoadingOverlay && window.swbLoadingOverlay.message) || 'Working... please wait.';
+		var message = customMessage || getLocalizedString('message', 'Working... please wait.');
 
 		if (messageNode) {
 			messageNode.textContent = message;
@@ -46,6 +69,42 @@
 		}, 45000);
 	}
 
+	function getBulkActionContext(form) {
+		var topSelect = form.querySelector('select[name="action"]');
+		var bottomSelect = form.querySelector('select[name="action2"]');
+		var actionSelect = null;
+		var actionValue = '';
+
+		if (topSelect && topSelect.value && '-1' !== topSelect.value) {
+			actionSelect = topSelect;
+			actionValue = topSelect.value;
+		} else if (bottomSelect && bottomSelect.value && '-1' !== bottomSelect.value) {
+			actionSelect = bottomSelect;
+			actionValue = bottomSelect.value;
+		}
+
+		if (!actionSelect || !actionValue || '-1' === actionValue) {
+			return null;
+		}
+
+		var selectedOption = actionSelect.options[actionSelect.selectedIndex];
+		var actionLabel = selectedOption ? (selectedOption.text || '').trim() : actionValue;
+		var selectedCount = form.querySelectorAll('tbody .check-column input[type="checkbox"]:checked').length;
+		var templateKey = 1 === selectedCount ? 'bulkActionMessageSingular' : 'bulkActionMessagePlural';
+		var messageTemplate = getLocalizedString(
+			templateKey,
+			'Running bulk action "%action%" for %count% selected mapping(s). This can take a while, so please keep this page open until it finishes.'
+		);
+
+		return {
+			value: actionValue,
+			message: interpolateTokens(messageTemplate, {
+				action: actionLabel,
+				count: selectedCount
+			})
+		};
+	}
+
 	function hideOverlay() {
 		var overlay = document.getElementById('swb-loading-overlay');
 		if (overlay) {
@@ -55,7 +114,7 @@
 		overlayVisible = false;
 	}
 
-	function markBusy(trigger, event) {
+	function markBusy(trigger, event, message) {
 		if (!trigger) {
 			return;
 		}
@@ -71,7 +130,7 @@
 		if (trigger.tagName !== 'A') {
 			trigger.disabled = true;
 		}
-		showOverlay();
+		showOverlay(message);
 	}
 
 	document.addEventListener('click', function (event) {
@@ -80,7 +139,8 @@
 			return;
 		}
 
-		markBusy(trigger, event);
+		var triggerMessage = trigger.getAttribute('data-swb-loading-message');
+		markBusy(trigger, event, triggerMessage);
 	});
 
 	document.addEventListener('submit', function (event) {
@@ -90,7 +150,13 @@
 		}
 
 		if (form.getAttribute('data-swb-long-action') === '1') {
-			showOverlay();
+			showOverlay(form.getAttribute('data-swb-loading-message'));
+			return;
+		}
+
+		var bulkActionContext = getBulkActionContext(form);
+		if (bulkActionContext) {
+			showOverlay(bulkActionContext.message);
 		}
 	});
 

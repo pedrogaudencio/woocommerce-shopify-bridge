@@ -91,14 +91,14 @@ class SWB_Admin_Mappings {
 			'swb-admin-loading-overlay',
 			SWB_PLUGIN_URL . 'assets/admin-loading-overlay.css',
 			array(),
-			SWB_VERSION
+			file_exists( SWB_PLUGIN_DIR . 'assets/admin-loading-overlay.css' ) ? filemtime( SWB_PLUGIN_DIR . 'assets/admin-loading-overlay.css' ) : SWB_VERSION
 		);
 
 		wp_enqueue_script(
 			'swb-admin-loading-overlay',
 			SWB_PLUGIN_URL . 'assets/admin-loading-overlay.js',
 			array(),
-			SWB_VERSION,
+			file_exists( SWB_PLUGIN_DIR . 'assets/admin-loading-overlay.js' ) ? filemtime( SWB_PLUGIN_DIR . 'assets/admin-loading-overlay.js' ) : SWB_VERSION,
 			true
 		);
 
@@ -107,6 +107,10 @@ class SWB_Admin_Mappings {
 			'swbLoadingOverlay',
 			array(
 				'message' => __( 'Working... please wait.', 'shopify-woo-bridge' ),
+				/* translators: %action% is the bulk action label and %count% is the number of selected mappings. */
+				'bulkActionMessageSingular' => __( 'Running bulk action "%action%" for %count% selected mapping. This can take a while, so please keep this page open until it finishes.', 'shopify-woo-bridge' ),
+				/* translators: %action% is the bulk action label and %count% is the number of selected mappings. */
+				'bulkActionMessagePlural'   => __( 'Running bulk action "%action%" for %count% selected mappings. This can take a while, so please keep this page open until it finishes.', 'shopify-woo-bridge' ),
 			)
 		);
 	}
@@ -123,7 +127,7 @@ class SWB_Admin_Mappings {
 		$current_product_type = $this->normalize_product_type_filter( isset( $_REQUEST['swb_product_type'] ) ? sanitize_key( wp_unslash( $_REQUEST['swb_product_type'] ) ) : 'all' );
 		?>
 		<div style="margin-bottom: 12px;">
-			<form method="post" action="" style="display: inline-block;" data-swb-long-action="1">
+			<form method="post" action="" style="display: inline-block;" data-swb-long-action="1" data-swb-loading-message="<?php echo esc_attr__( 'Fetching Shopify IDs from all eligible products. This can take a while, so please keep this page open until it finishes.', 'shopify-woo-bridge' ); ?>">
 				<?php wp_nonce_field( 'swb_fetch_all_shopify_ids_action', 'swb_fetch_all_shopify_ids_nonce' ); ?>
 				<input type="hidden" name="page" value="shopify-bridge-mappings" />
 				<input type="hidden" name="tab" value="mappings" />
@@ -131,7 +135,7 @@ class SWB_Admin_Mappings {
 				<input type="hidden" name="swb_fetch_all_shopify_ids" value="1" />
 				<?php submit_button( __( 'Fetch all Shopify IDs from products', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
 			</form>
-			<form method="post" action="" style="display: inline-block; margin-left: 8px;" data-swb-long-action="1">
+			<form method="post" action="" style="display: inline-block; margin-left: 8px;" data-swb-long-action="1" data-swb-loading-message="<?php echo esc_attr__( 'Syncing stock for all eligible mappings. This can take a while, so please keep this page open until it finishes.', 'shopify-woo-bridge' ); ?>">
 				<?php wp_nonce_field( 'swb_bulk_sync_stock_action', 'swb_bulk_sync_stock_nonce' ); ?>
 				<input type="hidden" name="page" value="shopify-bridge-mappings" />
 				<input type="hidden" name="tab" value="mappings" />
@@ -139,7 +143,7 @@ class SWB_Admin_Mappings {
 				<input type="hidden" name="swb_bulk_sync_stock" value="1" />
 				<?php submit_button( __( 'Sync Stock of all eligible mappings', 'shopify-woo-bridge' ), 'secondary', 'submit', false ); ?>
 			</form>
-			<form method="post" action="" style="display: inline-block; margin-left: 8px;" data-swb-long-action="1" id="swb-bulk-sync-images-form">
+			<form method="post" action="" style="display: inline-block; margin-left: 8px;" data-swb-long-action="1" data-swb-loading-message="<?php echo esc_attr__( 'Syncing images for all eligible mappings. This can take a while, so please keep this page open until it finishes.', 'shopify-woo-bridge' ); ?>" id="swb-bulk-sync-images-form">
 				<?php wp_nonce_field( 'swb_bulk_sync_images_action', 'swb_bulk_sync_images_nonce' ); ?>
 				<input type="hidden" name="page" value="shopify-bridge-mappings" />
 				<input type="hidden" name="tab" value="mappings" />
