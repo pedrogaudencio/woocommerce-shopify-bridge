@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Shopify WooCommerce Bridge
  * Plugin URI:  https://github.com/pedrogaudencio/woocommerce-shopify-sync
- * Description: Secure, one-way stock synchronization from Shopify to WooCommerce for explicitly mapped products. Phase 1 limits scope to absolute stock updates via webhooks.
+ * Description: Map Shopify IDs and run stock and image sync actions for mapped WooCommerce products.
  * Version:     1.0.0
  * Author:      Pedro Gaudencio
  * Author URI:  https://github.com/pedrogaudencio
