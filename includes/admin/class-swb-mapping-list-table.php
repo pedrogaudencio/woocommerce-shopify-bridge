@@ -598,8 +598,12 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 */
 	public function get_bulk_actions() {
 		$actions = array(
-			'bulk-reset-media-status' => __( 'Reset Media Status', 'shopify-woo-bridge' ),
-			'bulk-delete' => 'Delete',
+			'bulk-sync-stock'         => __( 'Sync stock', 'shopify-woo-bridge' ),
+			'bulk-sync-images'        => __( 'Sync images', 'shopify-woo-bridge' ),
+			'bulk-reset-media-status' => __( 'Reset media status', 'shopify-woo-bridge' ),
+			'bulk-enable'             => __( 'Enable', 'shopify-woo-bridge' ),
+			'bulk-disable'            => __( 'Disable', 'shopify-woo-bridge' ),
+			'bulk-delete'             => __( 'Delete', 'shopify-woo-bridge' ),
 		);
 
 		return $actions;
@@ -786,6 +790,192 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 */
 	public function process_bulk_action() {
 		$state_args = self::get_preserved_state_query_args();
+		$bulk_action = $this->current_action();
+
+		if ( in_array( $bulk_action, array( 'bulk-sync-stock', 'bulk-sync-images', 'bulk-reset-media-status', 'bulk-enable', 'bulk-disable' ), true ) ) {
+			if ( ! current_user_can( 'manage_woocommerce' ) ) {
+				wp_die( 'Unauthorized.' );
+			}
+
+			if ( ! isset( $_POST['_wpnonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['_wpnonce'] ) ), 'bulk-' . $this->_args['plural'] ) ) {
+				die( 'Go get a life script kiddies' );
+			}
+
+			$mapping_ids = isset( $_POST['bulk-delete'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['bulk-delete'] ) ) : array();
+			$mapping_ids = array_values( array_filter( $mapping_ids ) );
+
+			if ( empty( $mapping_ids ) ) {
+				wp_safe_redirect(
+					add_query_arg(
+						array_merge(
+							array(
+								'page'        => 'shopify-bridge-mappings',
+								'tab'         => 'mappings',
+								'swb_notice'  => '1',
+								'swb_type'    => 'error',
+								'swb_message' => __( 'No mappings selected.', 'shopify-woo-bridge' ),
+							),
+							$state_args
+						),
+						admin_url( 'admin.php' )
+					)
+				);
+				exit;
+			}
+
+			$failed      = 0;
+			$processed   = 0;
+			$skipped     = 0;
+			$updated     = 0;
+			$unchanged   = 0;
+			$enabled     = 0;
+			$disabled    = 0;
+			$sync_images = null;
+
+			if ( 'bulk-sync-images' === $bulk_action ) {
+				$sync_images = new SWB_Image_Sync();
+			}
+
+			foreach ( $mapping_ids as $mapping_id ) {
+				$mapping = SWB_DB::get_mapping( $mapping_id );
+				if ( ! $mapping ) {
+					$failed++;
+					continue;
+				}
+
+				if ( 'bulk-reset-media-status' === $bulk_action ) {
+					$this->reset_media_sync_status_for_mapping( $mapping );
+					$processed++;
+					continue;
+				}
+
+				if ( 'bulk-enable' === $bulk_action ) {
+					$result = SWB_DB::update_mapping( $mapping_id, array( 'is_enabled' => 1 ) );
+					if ( false === $result ) {
+						$failed++;
+						continue;
+					}
+
+					$enabled++;
+					continue;
+				}
+
+				if ( 'bulk-disable' === $bulk_action ) {
+					$result = SWB_DB::update_mapping( $mapping_id, array( 'is_enabled' => 0 ) );
+					if ( false === $result ) {
+						$failed++;
+						continue;
+					}
+
+					$disabled++;
+					continue;
+				}
+
+				$is_enabled = (int) $this->get_item_value( $mapping, 'is_enabled', 0 );
+				if ( 1 !== $is_enabled ) {
+					$skipped++;
+					continue;
+				}
+
+				if ( 'bulk-sync-stock' === $bulk_action ) {
+					$processed++;
+					if ( $this->sync_inventory_for_mapping( $mapping ) ) {
+						$updated++;
+					} else {
+						$failed++;
+					}
+					continue;
+				}
+
+				$shopify_product_id = (string) $this->get_item_value( $mapping, 'shopify_product_id', '' );
+				if ( '' === $shopify_product_id ) {
+					$skipped++;
+					continue;
+				}
+
+				$processed++;
+				$result = $sync_images->sync_images_for_mapping( $mapping );
+
+				if ( ! empty( $result['success'] ) ) {
+					$this->set_media_sync_status( $mapping_id, ! empty( $result['changed'] ) ? 'changed' : 'unchanged', '' );
+					if ( ! empty( $result['changed'] ) ) {
+						$updated++;
+					} else {
+						$unchanged++;
+					}
+					continue;
+				}
+
+				$this->set_media_sync_status(
+					$mapping_id,
+					'error',
+					! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' )
+				);
+				$failed++;
+			}
+
+			$notice_type = $failed > 0 ? 'error' : 'success';
+			$message     = '';
+
+			if ( 'bulk-sync-stock' === $bulk_action ) {
+				$message = sprintf(
+					/* translators: 1: processed mappings, 2: synced mappings, 3: skipped mappings, 4: failed mappings. */
+					__( 'Bulk stock sync complete. Processed: %1$d, Synced: %2$d, Skipped: %3$d, Failed: %4$d.', 'shopify-woo-bridge' ),
+					$processed,
+					$updated,
+					$skipped,
+					$failed
+				);
+			} elseif ( 'bulk-sync-images' === $bulk_action ) {
+				$message = sprintf(
+					/* translators: 1: processed mappings, 2: changed mappings, 3: unchanged mappings, 4: skipped mappings, 5: failed mappings. */
+					__( 'Bulk image sync complete. Processed: %1$d, Changed: %2$d, Unchanged: %3$d, Skipped: %4$d, Failed: %5$d.', 'shopify-woo-bridge' ),
+					$processed,
+					$updated,
+					$unchanged,
+					$skipped,
+					$failed
+				);
+			} elseif ( 'bulk-reset-media-status' === $bulk_action ) {
+				$message = sprintf(
+					/* translators: 1: processed mappings, 2: failed mappings. */
+					__( 'Bulk reset complete. Reset: %1$d, Failed: %2$d.', 'shopify-woo-bridge' ),
+					$processed,
+					$failed
+				);
+			} elseif ( 'bulk-enable' === $bulk_action ) {
+				$message = sprintf(
+					/* translators: 1: enabled mappings, 2: failed mappings. */
+					__( 'Bulk enable complete. Enabled: %1$d, Failed: %2$d.', 'shopify-woo-bridge' ),
+					$enabled,
+					$failed
+				);
+			} else {
+				$message = sprintf(
+					/* translators: 1: disabled mappings, 2: failed mappings. */
+					__( 'Bulk disable complete. Disabled: %1$d, Failed: %2$d.', 'shopify-woo-bridge' ),
+					$disabled,
+					$failed
+				);
+			}
+
+			wp_safe_redirect(
+				add_query_arg(
+					array_merge(
+						array(
+							'page'        => 'shopify-bridge-mappings',
+							'tab'         => 'mappings',
+							'swb_notice'  => '1',
+							'swb_type'    => $notice_type,
+							'swb_message' => $message,
+						),
+						$state_args
+					),
+					admin_url( 'admin.php' )
+				)
+			);
+			exit;
+		}
 
 		if ( 'reset_media_status' === $this->current_action() ) {
 			if ( isset( $_GET['mapping'] ) ) {
@@ -834,56 +1024,6 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				);
 				exit;
 			}
-		}
-
-		if ( ( isset( $_POST['action'] ) && 'bulk-reset-media-status' === $_POST['action'] )
-			|| ( isset( $_POST['action2'] ) && 'bulk-reset-media-status' === $_POST['action2'] )
-		) {
-			if ( ! wp_verify_nonce( $_POST['_wpnonce'], 'bulk-' . $this->_args['plural'] ) ) {
-				die( 'Go get a life script kiddies' );
-			}
-
-			$mapping_ids = isset( $_POST['bulk-delete'] ) ? array_map( 'absint', (array) $_POST['bulk-delete'] ) : array();
-			$mapping_ids = array_values( array_filter( $mapping_ids ) );
-
-			$processed = 0;
-			$failed    = 0;
-
-			foreach ( $mapping_ids as $mapping_id ) {
-				$mapping = SWB_DB::get_mapping( $mapping_id );
-				if ( ! $mapping ) {
-					$failed++;
-					continue;
-				}
-
-				$this->reset_media_sync_status_for_mapping( $mapping );
-				$processed++;
-			}
-
-			$notice_type = $failed > 0 ? 'error' : 'success';
-			$message     = sprintf(
-				/* translators: 1: processed count, 2: failed count. */
-				__( 'Bulk reset complete. Reset: %1$d, Failed: %2$d.', 'shopify-woo-bridge' ),
-				$processed,
-				$failed
-			);
-
-			wp_safe_redirect(
-				add_query_arg(
-					array_merge(
-						array(
-							'page'        => 'shopify-bridge-mappings',
-							'tab'         => 'mappings',
-							'swb_notice'  => '1',
-							'swb_type'    => $notice_type,
-							'swb_message' => $message,
-						),
-						$state_args
-					),
-					admin_url( 'admin.php' )
-				)
-			);
-			exit;
 		}
 
 		if ( 'sync_images' === $this->current_action() ) {
