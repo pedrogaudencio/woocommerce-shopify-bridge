@@ -1086,6 +1086,10 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 		if ( 'reset_media_status' === $this->current_action() ) {
 			if ( isset( $_GET['mapping'] ) ) {
+				if ( ! current_user_can( 'manage_woocommerce' ) ) {
+					wp_die( 'Unauthorized.' );
+				}
+
 				$mapping_id = absint( $_GET['mapping'] );
 
 				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_reset_media_status_' . $mapping_id ) ) {
@@ -1135,6 +1139,10 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 		if ( 'sync_images' === $this->current_action() ) {
 			if ( isset( $_GET['mapping'] ) ) {
+				if ( ! current_user_can( 'manage_woocommerce' ) ) {
+					wp_die( 'Unauthorized.' );
+				}
+
 				$mapping_id = absint( $_GET['mapping'] );
 
 				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_sync_images_mapping_' . $mapping_id ) ) {
@@ -1197,6 +1205,10 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		if ( 'sync' === $this->current_action() ) {
 			// Handle sync action.
 			if ( isset( $_GET['mapping'] ) ) {
+				if ( ! current_user_can( 'manage_woocommerce' ) ) {
+					wp_die( 'Unauthorized.' );
+				}
+
 				$mapping_id = absint( $_GET['mapping'] );
 
 				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_sync_mapping_' . $mapping_id ) ) {
@@ -1216,6 +1228,10 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		if ( 'delete' === $this->current_action() ) {
 			// Handle single delete.
 			if ( isset( $_GET['mapping'] ) ) {
+				if ( ! current_user_can( 'manage_woocommerce' ) ) {
+					wp_die( 'Unauthorized.' );
+				}
+
 				$mapping_id = absint( $_GET['mapping'] );
 
 				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_delete_mapping_' . $mapping_id ) ) {
@@ -1233,6 +1249,10 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		if ( 'toggle' === $this->current_action() ) {
 			// Handle single toggle.
 			if ( isset( $_GET['mapping'] ) ) {
+				if ( ! current_user_can( 'manage_woocommerce' ) ) {
+					wp_die( 'Unauthorized.' );
+				}
+
 				$mapping_id = absint( $_GET['mapping'] );
 
 				if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'swb_toggle_mapping_' . $mapping_id ) ) {
@@ -1249,6 +1269,9 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		if ( ( isset( $_POST['action'] ) && $_POST['action'] == 'bulk-delete' )
 		     || ( isset( $_POST['action2'] ) && $_POST['action2'] == 'bulk-delete' )
 		) {
+			if ( ! current_user_can( 'manage_woocommerce' ) ) {
+				wp_die( 'Unauthorized.' );
+			}
 
 			if ( ! wp_verify_nonce( $_POST['_wpnonce'], 'bulk-' . $this->_args['plural'] ) ) {
 				die( 'Go get a life script kiddies' );
