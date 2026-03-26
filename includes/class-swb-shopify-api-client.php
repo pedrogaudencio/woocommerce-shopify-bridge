@@ -298,6 +298,10 @@ class SWB_Shopify_API_Client {
 	 * @return array|WP_Error
 	 */
 	public function request_by_url( $url ) {
+		if ( ! $this->is_allowed_shopify_admin_url( $url ) ) {
+			return new WP_Error( 'swb_invalid_shopify_url', __( 'Blocked request to non-allowed Shopify URL.', 'shopify-woo-bridge' ) );
+		}
+
 		$auth = $this->get_auth_values();
 		if ( is_wp_error( $auth ) ) {
 			return $auth;
@@ -323,7 +327,12 @@ class SWB_Shopify_API_Client {
 		}
 
 		if ( preg_match( '/<([^>]+)>;\s*rel="next"/i', $link_header, $matches ) ) {
-			return $matches[1];
+			$next_link = $matches[1];
+			if ( $this->is_allowed_shopify_admin_url( $next_link ) ) {
+				return $next_link;
+			}
+
+			SWB_Logger::warning( 'Ignoring Shopify pagination next link because URL failed allowlist validation.', array( 'next_link' => $next_link ) );
 		}
 
 		return null;
@@ -525,6 +534,34 @@ class SWB_Shopify_API_Client {
 	private function get_store_domain() {
 		$domain = trim( strtolower( (string) get_option( 'swb_shopify_store_domain', '' ) ) );
 		return preg_replace( '#^https?://#', '', $domain );
+	}
+
+	/**
+	 * Validate that a URL is an allowed Shopify Admin API URL for this store.
+	 *
+	 * @param string $url Absolute URL.
+	 * @return bool
+	 */
+	private function is_allowed_shopify_admin_url( $url ) {
+		$store_domain = $this->get_store_domain();
+		if ( '' === $store_domain ) {
+			return false;
+		}
+
+		$parts = wp_parse_url( trim( (string) $url ) );
+		if ( ! is_array( $parts ) ) {
+			return false;
+		}
+
+		$scheme = isset( $parts['scheme'] ) ? strtolower( (string) $parts['scheme'] ) : '';
+		$host   = isset( $parts['host'] ) ? strtolower( (string) $parts['host'] ) : '';
+		$path   = isset( $parts['path'] ) ? (string) $parts['path'] : '';
+
+		if ( 'https' !== $scheme || $store_domain !== $host ) {
+			return false;
+		}
+
+		return 0 === strpos( $path, '/admin/api/' );
 	}
 }
 

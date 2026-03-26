@@ -41,6 +41,17 @@ wp_swb_stock_history (
 
 ## REST API Endpoints
 
+## Security Behavior
+
+- Permission callbacks always enforce authentication; kill switches do not open anonymous access.
+- Unsigned requests are rejected with HTTP `401` (`swb_missing_signature` / `swb_invalid_signature`).
+- Kill-switch responses (`global_sync_disabled`, `stock_api_disabled`) are returned only after authentication succeeds.
+- Shopify pagination next links are restricted to:
+  - `https` scheme,
+  - exact configured Shopify store host,
+  - path prefix `/admin/api/`.
+  Invalid next links are ignored and logged.
+
 ### General Tab Kill Switches
 
 - `Global Kill Switch` stops incoming webhook stock processing.
@@ -78,6 +89,8 @@ GET /stock/{inventory_item_id}
 **Authentication:**
 - WordPress admin users (manage_woocommerce capability)
 - OR valid Shopify HMAC signature header
+
+Unauthenticated requests receive `401` even when kill switches are enabled.
 
 **Response (Success):**
 ```json
@@ -122,6 +135,7 @@ GET /stock/{inventory_item_id}
 
 **HTTP Status Codes:**
 - `200` - Success
+- `401` - Missing/invalid signature for unauthenticated requests
 - `404` - Item not mapped
 - `403` - Mapping disabled
 - `503` - Stock REST API kill switch enabled
@@ -145,7 +159,7 @@ GET /stock/{inventory_item_id}/history
 
 **Parameters:**
 - `inventory_item_id` (string, required) - The Shopify inventory item ID
-- `limit` (integer, optional, default: 50) - Number of records to retrieve (1-1000)
+- `limit` (integer, optional, default: 50) - Number of records to retrieve (1-200)
 
 **Authentication:**
 - WordPress admin users (manage_woocommerce capability)
@@ -194,6 +208,7 @@ GET /stock/{inventory_item_id}/history
 
 **HTTP Status Codes:**
 - `200` - Success
+- `401` - Missing/invalid signature for unauthenticated requests
 - `404` - Item not mapped
 - `403` - Mapping disabled
 - `503` - Stock REST API kill switch enabled

@@ -24,7 +24,9 @@ If you encounter 404 errors or the `/wp-json/` path is not accessible in your lo
 2. Global sync is enabled in plugin settings
 3. At least one product mapping exists
 4. WooCommerce product exists with the mapped SKU
-5. WordPress user has `manage_woocommerce` capability or valid REST API token
+5. Requests are authenticated using either:
+   - an admin user session (`manage_woocommerce`), or
+   - a valid `X-Shopify-Hmac-Sha256` signature.
 
 ## Test Cases
 
@@ -239,25 +241,80 @@ curl -X GET "http://localhost:8000/wp-json/shopify-bridge/v1/stock/123456"
 ```
 
 **Expected Result:**
-- HTTP Status: 401 or 403
-- Unauthorized error response
+- HTTP Status: 401
+- Response: `{"code":"swb_missing_signature","message":"Missing X-Shopify-Hmac-Sha256 header."}`
 
 ### TC-11: Global Sync Disabled
 
-**Objective:** Verify endpoints return 503 when sync is disabled
+**Objective:** Verify kill switch does not bypass authentication
 
 **Setup:**
 - Disable "Enable Shopify Bridge" in settings
 
 **Steps:**
 ```bash
+# Unsigned request must still be rejected at permission layer
+curl -X GET "http://localhost:8000/wp-json/shopify-bridge/v1/stock/123456"
+```
+
+**Expected Result:**
+- HTTP Status: 401
+- Response: `{"code":"swb_missing_signature",...}`
+
+### TC-12: Global Sync Disabled with Valid Signature
+
+**Objective:** Verify authenticated/signed requests still receive kill-switch business response
+
+**Setup:**
+- Disable "Enable Shopify Bridge" in settings
+- Ensure `swb_webhook_secret` is configured
+
+**Steps:**
+```bash
+SECRET="your_webhook_secret"
+SIG=$(printf '' | openssl dgst -sha256 -hmac "$SECRET" -binary | base64)
+
 curl -X GET "http://localhost:8000/wp-json/shopify-bridge/v1/stock/123456" \
-  -H "Authorization: Bearer YOUR_TOKEN"
+  -H "X-Shopify-Hmac-Sha256: $SIG"
 ```
 
 **Expected Result:**
 - HTTP Status: 503
 - Response: `{"success":false,"error":"global_sync_disabled"}`
+
+### TC-13: Stock API Kill Switch with Valid Signature
+
+**Objective:** Verify stock API kill switch returns disabled response only after authentication succeeds
+
+**Setup:**
+- Enable "Stock REST API Kill Switch"
+- Ensure `swb_webhook_secret` is configured
+
+**Steps:**
+```bash
+SECRET="your_webhook_secret"
+SIG=$(printf '' | openssl dgst -sha256 -hmac "$SECRET" -binary | base64)
+
+curl -X GET "http://localhost:8000/wp-json/shopify-bridge/v1/stock/123456" \
+  -H "X-Shopify-Hmac-Sha256: $SIG"
+```
+
+**Expected Result:**
+- HTTP Status: 503
+- Response: `{"success":false,"error":"stock_api_disabled"}`
+
+### TC-14: Shopify Pagination Next-Link Allowlist (Security Regression)
+
+**Objective:** Verify pagination follows only HTTPS links on configured store domain under `/admin/api/`
+
+**Setup:**
+- Trigger a paginated Shopify request path (e.g., export or bulk sync)
+- Simulate/force a malformed `Link` header `rel="next"` pointing to a non-allowed URL
+
+**Expected Result:**
+- The client does **not** request the untrusted URL
+- A warning is logged: `Ignoring Shopify pagination next link because URL failed allowlist validation.`
+- Pagination stops safely (no SSRF-style follow-up request)
 
 ### TC-12: Disabled Mapping
 
