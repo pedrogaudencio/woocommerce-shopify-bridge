@@ -40,6 +40,8 @@ class SWB_Admin_Mappings {
 	 */
 	public function __construct() {
 		add_action( 'admin_menu', array( $this, 'add_plugin_page' ) );
+		add_action( 'load-woocommerce_page_shopify-bridge-mappings', array( $this, 'register_mappings_screen_options' ) );
+		add_filter( 'set-screen-option', array( $this, 'save_mappings_screen_option' ), 10, 3 );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_loading_assets' ) );
 		add_action( 'admin_init', array( $this, 'handle_add_mapping' ) );
 		add_action( 'admin_init', array( $this, 'handle_sync_images_action' ) );
@@ -48,6 +50,40 @@ class SWB_Admin_Mappings {
 		add_action( 'admin_init', array( $this, 'handle_bulk_sync_images' ) );
 		add_action( 'admin_init', array( $this, 'handle_settings_save' ) );
 		add_action( 'admin_init', array( $this, 'maybe_redirect_legacy_settings_url' ) );
+	}
+
+	/**
+	 * Register screen options for the mappings page.
+	 *
+	 * @return void
+	 */
+	public function register_mappings_screen_options() {
+		add_screen_option(
+			'per_page',
+			array(
+				'label'   => __( 'Mappings per page', 'shopify-woo-bridge' ),
+				'default' => 20,
+				'option'  => 'mappings_per_page',
+			)
+		);
+	}
+
+	/**
+	 * Persist mappings per-page screen option using WordPress default behavior.
+	 *
+	 * @param mixed  $status Existing status.
+	 * @param string $option Option name.
+	 * @param mixed  $value Submitted value.
+	 * @return mixed
+	 */
+	public function save_mappings_screen_option( $status, $option, $value ) {
+		if ( 'mappings_per_page' !== $option ) {
+			return $status;
+		}
+
+		$value = absint( $value );
+
+		return max( 1, min( 200, $value ) );
 	}
 
 	/**
