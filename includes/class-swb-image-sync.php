@@ -651,6 +651,10 @@ class SWB_Image_Sync {
 			return new WP_Error( 'swb_empty_image_url', __( 'Image URL is empty.', 'shopify-woo-bridge' ) );
 		}
 
+		if ( ! $this->is_allowed_shopify_media_url( $url ) ) {
+			return new WP_Error( 'swb_disallowed_image_url', __( 'Image URL is not from an allowed Shopify host.', 'shopify-woo-bridge' ) );
+		}
+
 		$existing = $this->find_attachment_by_source_url( $url );
 		if ( $existing > 0 ) {
 			return $existing;
@@ -706,6 +710,40 @@ class SWB_Image_Sync {
 		);
 
 		return absint( $attachment_id );
+	}
+
+	/**
+	 * Validate remote image URL against an allowlist of trusted Shopify hosts.
+	 *
+	 * @param string $url Image URL.
+	 * @return bool
+	 */
+	private function is_allowed_shopify_media_url( $url ) {
+		$parts = wp_parse_url( trim( (string) $url ) );
+		if ( ! is_array( $parts ) ) {
+			return false;
+		}
+
+		$scheme = isset( $parts['scheme'] ) ? strtolower( (string) $parts['scheme'] ) : '';
+		$host   = isset( $parts['host'] ) ? strtolower( (string) $parts['host'] ) : '';
+
+		if ( 'https' !== $scheme || '' === $host ) {
+			return false;
+		}
+
+		$store_domain = trim( strtolower( (string) get_option( 'swb_shopify_store_domain', '' ) ) );
+		$store_domain = preg_replace( '#^https?://#', '', $store_domain );
+		$store_domain = preg_replace( '#/.*$#', '', $store_domain );
+
+		if ( '' !== $store_domain && $host === $store_domain ) {
+			return true;
+		}
+
+		if ( 'cdn.shopify.com' === $host ) {
+			return true;
+		}
+
+		return (bool) preg_match( '/(^|\.)shopifycdn\.net$/', $host );
 	}
 
 	/**
