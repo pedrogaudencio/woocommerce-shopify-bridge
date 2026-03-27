@@ -86,6 +86,7 @@ class SWB_Admin_Mappings {
 		add_action( 'wp_ajax_swb_tick_bulk_stock_sync_ajax', array( $this, 'ajax_tick_bulk_stock_sync' ) );
 		add_action( 'wp_ajax_swb_start_selected_bulk_stock_sync_ajax', array( $this, 'ajax_start_selected_bulk_stock_sync' ) );
 		add_action( 'wp_ajax_swb_tick_selected_bulk_stock_sync_ajax', array( $this, 'ajax_tick_selected_bulk_stock_sync' ) );
+		add_action( 'wp_ajax_swb_cancel_sync_ajax_job', array( $this, 'ajax_cancel_sync_ajax_job' ) );
 	}
 
 	/**
@@ -213,6 +214,11 @@ class SWB_Admin_Mappings {
 				'bulkStockSyncTickAction' => 'swb_tick_bulk_stock_sync_ajax',
 				'selectedBulkStockSyncStartAction' => 'swb_start_selected_bulk_stock_sync_ajax',
 				'selectedBulkStockSyncTickAction' => 'swb_tick_selected_bulk_stock_sync_ajax',
+				'cancelSyncAction' => 'swb_cancel_sync_ajax_job',
+				'cancelButtonLabel' => __( 'Abort', 'shopify-woo-bridge' ),
+				'cancellingMessage' => __( 'Aborting sync...', 'shopify-woo-bridge' ),
+				'cancelledMessage' => __( 'Sync aborted.', 'shopify-woo-bridge' ),
+				'cancelFailedMessage' => __( 'Could not abort sync. Please try again.', 'shopify-woo-bridge' ),
 				/* translators: %action% is the bulk action label and %count% is the number of selected mappings. */
 				'bulkActionMessageSingular' => __( 'Running bulk action "%action%" for %count% selected mapping. This can take a while, so please keep this page open until it finishes.', 'shopify-woo-bridge' ),
 				/* translators: %action% is the bulk action label and %count% is the number of selected mappings. */
@@ -1984,6 +1990,45 @@ class SWB_Admin_Mappings {
 		}
 
 		wp_send_json_success( $result );
+	}
+
+	/**
+	 * AJAX: Cancel any running sync job by token.
+	 *
+	 * @return void
+	 */
+	public function ajax_cancel_sync_ajax_job() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Unauthorized.', 'shopify-woo-bridge' ) ), 403 );
+		}
+
+		check_ajax_referer( 'swb_bulk_image_sync_ajax', 'nonce' );
+
+		$job_token = isset( $_POST['job_token'] ) ? preg_replace( '/[^a-zA-Z0-9]/', '', (string) wp_unslash( $_POST['job_token'] ) ) : '';
+		if ( '' === $job_token ) {
+			wp_send_json_error( array( 'message' => __( 'Invalid sync job token.', 'shopify-woo-bridge' ) ), 400 );
+		}
+
+		$option_keys = array(
+			$this->get_bulk_image_sync_job_option_key( $job_token ),
+			$this->get_selected_bulk_image_sync_ajax_option_key( $job_token ),
+			$this->get_bulk_stock_sync_ajax_option_key( $job_token, false ),
+			$this->get_bulk_stock_sync_ajax_option_key( $job_token, true ),
+		);
+
+		$deleted = 0;
+		foreach ( $option_keys as $option_key ) {
+			if ( delete_option( $option_key ) ) {
+				$deleted++;
+			}
+		}
+
+		wp_send_json_success(
+			array(
+				'cancelled' => true,
+				'deleted'   => $deleted,
+			)
+		);
 	}
 
 	/**

@@ -26,9 +26,21 @@
 }
 
 .swb-loading-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+}
+
+.swb-loading-header-main {
 	display: inline-flex;
 	align-items: center;
 	gap: 10px;
+	min-width: 0;
+}
+
+.swb-loading-cancel {
+	flex: 0 0 auto;
 }
 
 .swb-loading-spinner {

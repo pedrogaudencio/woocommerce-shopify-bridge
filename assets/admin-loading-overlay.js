@@ -6,6 +6,10 @@
 	var localized = window.swbLoadingOverlay || {};
 	var bulkActionStorageKey = 'swbBulkActionInProgress';
 	var bulkActionMaxAgeMs = 30 * 60 * 1000;
+	var activeSyncController = null;
+	var activeSyncJobToken = '';
+	var activeSyncCancelled = false;
+	var activeSyncForm = null;
 
 	function getLocalizedString(key, fallback) {
 		if (localized && typeof localized[key] === 'string' && localized[key].length > 0) {
@@ -64,8 +68,11 @@
 		overlay.innerHTML =
 			'<div class="swb-loading-overlay-inner" role="status" aria-live="polite">' +
 			'<div class="swb-loading-header">' +
+			'<div class="swb-loading-header-main">' +
 			'<span class="swb-loading-spinner" aria-hidden="true"></span>' +
 			'<span class="swb-loading-message"></span>' +
+			'</div>' +
+			'<button type="button" class="button button-secondary swb-loading-cancel" hidden></button>' +
 			'</div>' +
 			'<div class="swb-loading-progress-wrap" hidden>' +
 			'<div class="swb-loading-progress-track" aria-hidden="true">' +
@@ -78,7 +85,47 @@
 			'</div>';
 
 		document.body.appendChild(overlay);
+		var cancelBtn = overlay.querySelector('.swb-loading-cancel');
+		if (cancelBtn) {
+			cancelBtn.textContent = getLocalizedString('cancelButtonLabel', 'Abort');
+		}
+
 		return overlay;
+	}
+
+	function setCancelButtonVisible(visible) {
+		var overlay = ensureOverlay();
+		var cancelBtn = overlay.querySelector('.swb-loading-cancel');
+
+		if (!cancelBtn) {
+			return;
+		}
+
+		cancelBtn.hidden = !visible;
+		cancelBtn.disabled = false;
+		cancelBtn.textContent = getLocalizedString('cancelButtonLabel', 'Abort');
+	}
+
+	function clearActiveSyncState() {
+		activeSyncController = null;
+		activeSyncJobToken = '';
+		activeSyncCancelled = false;
+		if (activeSyncForm) {
+			activeSyncForm.removeAttribute('data-swb-ajax-running');
+			activeSyncForm = null;
+		}
+		setCancelButtonVisible(false);
+	}
+
+	function beginActiveSync(form) {
+		activeSyncCancelled = false;
+		activeSyncController = (typeof window.AbortController !== 'undefined') ? new window.AbortController() : null;
+		activeSyncForm = form;
+		setCancelButtonVisible(true);
+	}
+
+	function isAbortError(error) {
+		return !!(error && (error.name === 'AbortError' || error.code === 20));
 	}
 
 	function getQueryParam(name) {
@@ -540,7 +587,7 @@
 		return state;
 	}
 
-	function postAjaxForm(actionName, extraData) {
+	function postAjaxForm(actionName, extraData, requestOptions) {
 		var body = new window.URLSearchParams();
 		body.set('action', actionName);
 
@@ -579,7 +626,8 @@
 				'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
 			},
 			credentials: 'same-origin',
-			body: body.toString()
+			body: body.toString(),
+			signal: requestOptions && requestOptions.signal ? requestOptions.signal : undefined
 		}).then(function (response) {
 			return response.json();
 		});
@@ -610,6 +658,7 @@
 		}
 
 		form.setAttribute('data-swb-ajax-running', '1');
+		beginActiveSync(form);
 		setBulkActionState('images');
 		showPersistentOverlayForBulkAction('images', { action: 'images', processed: 0, handled: 0, total: 0, indeterminate: true });
 
@@ -619,20 +668,37 @@
 		postAjaxForm(localized.bulkImageSyncStartAction, {
 			nonce: localized.bulkImageSyncAjaxNonce,
 			swb_product_type: productType
+		}, {
+			signal: activeSyncController ? activeSyncController.signal : undefined
 		}).then(function (json) {
+			if (activeSyncCancelled) {
+				return;
+			}
+
 			if (!json || !json.success || !json.data || !json.data.jobToken) {
 				throw new Error((json && json.data && json.data.message) ? json.data.message : 'Could not start bulk image sync job.');
 			}
 
 			var jobToken = json.data.jobToken;
+			activeSyncJobToken = jobToken;
 			var initialProgress = normalizeProgress(json.data.progress);
 			showPersistentOverlayForBulkAction('images', initialProgress);
 
 			var tick = function () {
+				if (activeSyncCancelled) {
+					return;
+				}
+
 				postAjaxForm(localized.bulkImageSyncTickAction, {
 					nonce: localized.bulkImageSyncAjaxNonce,
 					job_token: jobToken
+				}, {
+					signal: activeSyncController ? activeSyncController.signal : undefined
 				}).then(function (tickJson) {
+					if (activeSyncCancelled) {
+						return;
+					}
+
 					if (!tickJson || !tickJson.success || !tickJson.data) {
 						throw new Error((tickJson && tickJson.data && tickJson.data.message) ? tickJson.data.message : 'Bulk image sync tick failed.');
 					}
@@ -642,6 +708,7 @@
 
 					if (data.done) {
 						setBulkActionState(null);
+						clearActiveSyncState();
 						if (data.redirectUrl) {
 							window.location.assign(data.redirectUrl);
 							return;
@@ -653,7 +720,11 @@
 
 					window.setTimeout(tick, 50);
 				}).catch(function (error) {
+					if (isAbortError(error)) {
+						return;
+					}
 					setBulkActionState(null);
+					clearActiveSyncState();
 					hideOverlay();
 					window.alert(error && error.message ? error.message : 'Bulk image sync failed.');
 				});
@@ -661,7 +732,11 @@
 
 			window.setTimeout(tick, 50);
 		}).catch(function (error) {
+			if (isAbortError(error)) {
+				return;
+			}
 			setBulkActionState(null);
+			clearActiveSyncState();
 			hideOverlay();
 			window.alert(error && error.message ? error.message : 'Could not start bulk image sync.');
 		});
@@ -679,6 +754,7 @@
 		}
 
 		form.setAttribute('data-swb-ajax-running', '1');
+		beginActiveSync(form);
 		setBulkActionState('images');
 		showPersistentOverlayForBulkAction('images', {
 			action: 'images',
@@ -692,19 +768,36 @@
 			nonce: localized.bulkImageSyncAjaxNonce,
 			mapping_ids: mappingIds,
 			state_args: getMappingsStateArgsFromUrl()
+		}, {
+			signal: activeSyncController ? activeSyncController.signal : undefined
 		}).then(function (json) {
+			if (activeSyncCancelled) {
+				return;
+			}
+
 			if (!json || !json.success || !json.data || !json.data.jobToken) {
 				throw new Error((json && json.data && json.data.message) ? json.data.message : 'Could not start selected bulk image sync job.');
 			}
 
 			var jobToken = json.data.jobToken;
+			activeSyncJobToken = jobToken;
 			showPersistentOverlayForBulkAction('images', normalizeProgress(json.data.progress));
 
 			var tick = function () {
+				if (activeSyncCancelled) {
+					return;
+				}
+
 				postAjaxForm(localized.selectedBulkImageSyncTickAction, {
 					nonce: localized.bulkImageSyncAjaxNonce,
 					job_token: jobToken
+				}, {
+					signal: activeSyncController ? activeSyncController.signal : undefined
 				}).then(function (tickJson) {
+					if (activeSyncCancelled) {
+						return;
+					}
+
 					if (!tickJson || !tickJson.success || !tickJson.data) {
 						throw new Error((tickJson && tickJson.data && tickJson.data.message) ? tickJson.data.message : 'Selected bulk image sync tick failed.');
 					}
@@ -714,6 +807,7 @@
 
 					if (data.done) {
 						setBulkActionState(null);
+						clearActiveSyncState();
 						if (data.redirectUrl) {
 							window.location.assign(data.redirectUrl);
 							return;
@@ -725,7 +819,11 @@
 
 					window.setTimeout(tick, 50);
 				}).catch(function (error) {
+					if (isAbortError(error)) {
+						return;
+					}
 					setBulkActionState(null);
+					clearActiveSyncState();
 					hideOverlay();
 					window.alert(error && error.message ? error.message : 'Selected bulk image sync failed.');
 				});
@@ -733,7 +831,11 @@
 
 			window.setTimeout(tick, 50);
 		}).catch(function (error) {
+			if (isAbortError(error)) {
+				return;
+			}
 			setBulkActionState(null);
+			clearActiveSyncState();
 			hideOverlay();
 			window.alert(error && error.message ? error.message : 'Could not start selected bulk image sync.');
 		});
@@ -745,6 +847,7 @@
 		}
 
 		form.setAttribute('data-swb-ajax-running', '1');
+		beginActiveSync(form);
 		setBulkActionState('stock');
 		showPersistentOverlayForBulkAction('stock', { action: 'stock', handled: 0, processed: 0, total: 0, indeterminate: true });
 
@@ -754,19 +857,36 @@
 		postAjaxForm(localized.bulkStockSyncStartAction, {
 			nonce: localized.bulkImageSyncAjaxNonce,
 			swb_product_type: productType
+		}, {
+			signal: activeSyncController ? activeSyncController.signal : undefined
 		}).then(function (json) {
+			if (activeSyncCancelled) {
+				return;
+			}
+
 			if (!json || !json.success || !json.data || !json.data.jobToken) {
 				throw new Error((json && json.data && json.data.message) ? json.data.message : 'Could not start bulk stock sync job.');
 			}
 
 			var jobToken = json.data.jobToken;
+			activeSyncJobToken = jobToken;
 			showPersistentOverlayForBulkAction('stock', normalizeProgress(json.data.progress));
 
 			var tick = function () {
+				if (activeSyncCancelled) {
+					return;
+				}
+
 				postAjaxForm(localized.bulkStockSyncTickAction, {
 					nonce: localized.bulkImageSyncAjaxNonce,
 					job_token: jobToken
+				}, {
+					signal: activeSyncController ? activeSyncController.signal : undefined
 				}).then(function (tickJson) {
+					if (activeSyncCancelled) {
+						return;
+					}
+
 					if (!tickJson || !tickJson.success || !tickJson.data) {
 						throw new Error((tickJson && tickJson.data && tickJson.data.message) ? tickJson.data.message : 'Bulk stock sync tick failed.');
 					}
@@ -776,6 +896,7 @@
 
 					if (data.done) {
 						setBulkActionState(null);
+						clearActiveSyncState();
 						if (data.redirectUrl) {
 							window.location.assign(data.redirectUrl);
 							return;
@@ -787,7 +908,11 @@
 
 					window.setTimeout(tick, 50);
 				}).catch(function (error) {
+					if (isAbortError(error)) {
+						return;
+					}
 					setBulkActionState(null);
+					clearActiveSyncState();
 					hideOverlay();
 					window.alert(error && error.message ? error.message : 'Bulk stock sync failed.');
 				});
@@ -795,7 +920,11 @@
 
 			window.setTimeout(tick, 50);
 		}).catch(function (error) {
+			if (isAbortError(error)) {
+				return;
+			}
 			setBulkActionState(null);
+			clearActiveSyncState();
 			hideOverlay();
 			window.alert(error && error.message ? error.message : 'Could not start bulk stock sync.');
 		});
@@ -813,6 +942,7 @@
 		}
 
 		form.setAttribute('data-swb-ajax-running', '1');
+		beginActiveSync(form);
 		setBulkActionState('stock');
 		showPersistentOverlayForBulkAction('stock', {
 			action: 'stock',
@@ -826,19 +956,36 @@
 			nonce: localized.bulkImageSyncAjaxNonce,
 			mapping_ids: mappingIds,
 			state_args: getMappingsStateArgsFromUrl()
+		}, {
+			signal: activeSyncController ? activeSyncController.signal : undefined
 		}).then(function (json) {
+			if (activeSyncCancelled) {
+				return;
+			}
+
 			if (!json || !json.success || !json.data || !json.data.jobToken) {
 				throw new Error((json && json.data && json.data.message) ? json.data.message : 'Could not start selected bulk stock sync job.');
 			}
 
 			var jobToken = json.data.jobToken;
+			activeSyncJobToken = jobToken;
 			showPersistentOverlayForBulkAction('stock', normalizeProgress(json.data.progress));
 
 			var tick = function () {
+				if (activeSyncCancelled) {
+					return;
+				}
+
 				postAjaxForm(localized.selectedBulkStockSyncTickAction, {
 					nonce: localized.bulkImageSyncAjaxNonce,
 					job_token: jobToken
+				}, {
+					signal: activeSyncController ? activeSyncController.signal : undefined
 				}).then(function (tickJson) {
+					if (activeSyncCancelled) {
+						return;
+					}
+
 					if (!tickJson || !tickJson.success || !tickJson.data) {
 						throw new Error((tickJson && tickJson.data && tickJson.data.message) ? tickJson.data.message : 'Selected bulk stock sync tick failed.');
 					}
@@ -848,6 +995,7 @@
 
 					if (data.done) {
 						setBulkActionState(null);
+						clearActiveSyncState();
 						if (data.redirectUrl) {
 							window.location.assign(data.redirectUrl);
 							return;
@@ -859,7 +1007,11 @@
 
 					window.setTimeout(tick, 50);
 				}).catch(function (error) {
+					if (isAbortError(error)) {
+						return;
+					}
 					setBulkActionState(null);
+					clearActiveSyncState();
 					hideOverlay();
 					window.alert(error && error.message ? error.message : 'Selected bulk stock sync failed.');
 				});
@@ -867,13 +1019,67 @@
 
 			window.setTimeout(tick, 50);
 		}).catch(function (error) {
+			if (isAbortError(error)) {
+				return;
+			}
 			setBulkActionState(null);
+			clearActiveSyncState();
 			hideOverlay();
 			window.alert(error && error.message ? error.message : 'Could not start selected bulk stock sync.');
 		});
 	}
 
+	function cancelActiveSync() {
+		var overlay = ensureOverlay();
+		var cancelBtn = overlay.querySelector('.swb-loading-cancel');
+
+		if (cancelBtn) {
+			cancelBtn.disabled = true;
+			cancelBtn.textContent = getLocalizedString('cancellingMessage', 'Aborting sync...');
+		}
+
+		activeSyncCancelled = true;
+
+		if (activeSyncController) {
+			try {
+				activeSyncController.abort();
+			} catch (e) {
+				// Ignore abort errors.
+			}
+		}
+
+		if (!activeSyncJobToken || !localized || !localized.cancelSyncAction || !localized.bulkImageSyncAjaxNonce) {
+			setBulkActionState(null);
+			clearActiveSyncState();
+			hideOverlay();
+			window.alert(getLocalizedString('cancelledMessage', 'Sync aborted.'));
+			return;
+		}
+
+		postAjaxForm(localized.cancelSyncAction, {
+			nonce: localized.bulkImageSyncAjaxNonce,
+			job_token: activeSyncJobToken
+		}).then(function () {
+			setBulkActionState(null);
+			clearActiveSyncState();
+			hideOverlay();
+			window.alert(getLocalizedString('cancelledMessage', 'Sync aborted.'));
+		}).catch(function () {
+			setBulkActionState(null);
+			clearActiveSyncState();
+			hideOverlay();
+			window.alert(getLocalizedString('cancelFailedMessage', 'Could not abort sync. Please try again.'));
+		});
+	}
+
 	document.addEventListener('click', function (event) {
+		var cancelBtn = event.target.closest('.swb-loading-cancel');
+		if (cancelBtn) {
+			event.preventDefault();
+			cancelActiveSync();
+			return;
+		}
+
 		var trigger = event.target.closest('[data-swb-long-action="1"]');
 		if (!trigger) {
 			return;
@@ -946,6 +1152,7 @@
 
 	if (isBulkImageSyncCompleteNotice() || isBulkStockSyncCompleteNotice()) {
 		setBulkActionState(null);
+		clearActiveSyncState();
 		hideOverlay();
 	}
 
