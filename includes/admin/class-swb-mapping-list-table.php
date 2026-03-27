@@ -168,7 +168,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return string
 	 */
 	private static function get_mapping_state_filter() {
-		$allowed = array( 'all', 'enabled', 'invalidated', 'disabled', 'not-synced', 'synced' );
+		$allowed = array( 'all', 'enabled', 'invalidated', 'disabled', 'not-synced', 'synced', 'stock-synced', 'stock-not-synced' );
 		$value   = isset( $_REQUEST['swb_mapping_state'] ) ? sanitize_key( $_REQUEST['swb_mapping_state'] ) : 'all'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 
 		if ( ! in_array( $value, $allowed, true ) ) {
@@ -286,10 +286,12 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			<select name="swb_mapping_state" id="swb-mapping-state-filter">
 				<option value="all" <?php selected( $current_state_filter, 'all' ); ?>><?php esc_html_e( 'All statuses', 'shopify-woo-bridge' ); ?></option>
 				<option value="enabled" <?php selected( $current_state_filter, 'enabled' ); ?>><?php esc_html_e( 'Enabled', 'shopify-woo-bridge' ); ?></option>
-				<option value="synced" <?php selected( $current_state_filter, 'synced' ); ?>><?php esc_html_e( 'Synced', 'shopify-woo-bridge' ); ?></option>
+				<option value="synced" <?php selected( $current_state_filter, 'synced' ); ?>><?php esc_html_e( 'Media synced', 'shopify-woo-bridge' ); ?></option>
+				<option value="stock-synced" <?php selected( $current_state_filter, 'stock-synced' ); ?>><?php esc_html_e( 'Stock synced', 'shopify-woo-bridge' ); ?></option>
 				<option value="invalidated" <?php selected( $current_state_filter, 'invalidated' ); ?>><?php esc_html_e( 'Invalidated', 'shopify-woo-bridge' ); ?></option>
 				<option value="disabled" <?php selected( $current_state_filter, 'disabled' ); ?>><?php esc_html_e( 'Disabled', 'shopify-woo-bridge' ); ?></option>
-				<option value="not-synced" <?php selected( $current_state_filter, 'not-synced' ); ?>><?php esc_html_e( 'Not synced', 'shopify-woo-bridge' ); ?></option>
+				<option value="not-synced" <?php selected( $current_state_filter, 'not-synced' ); ?>><?php esc_html_e( 'Media not synced', 'shopify-woo-bridge' ); ?></option>
+				<option value="stock-not-synced" <?php selected( $current_state_filter, 'stock-not-synced' ); ?>><?php esc_html_e( 'Stock not synced', 'shopify-woo-bridge' ); ?></option>
 			</select>
 			<?php submit_button( __( 'Filter', 'shopify-woo-bridge' ), 'button', 'filter_action', false ); ?>
 		</div>
@@ -476,7 +478,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 		$product_id = $this->find_wc_product_id_by_sku_for_status( $wc_sku );
 		if ( $product_id <= 0 ) {
-			return esc_html__( 'Not synced', 'shopify-woo-bridge' );
+			return esc_html__( 'Media not synced', 'shopify-woo-bridge' );
 		}
 
 		$product      = wc_get_product( $product_id );
@@ -501,9 +503,9 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		}
 
 		if ( '' === $last_synced ) {
-			$status = esc_html__( 'Not synced', 'shopify-woo-bridge' );
+			$status = esc_html__( 'Media not synced', 'shopify-woo-bridge' );
 		} else {
-			$status = esc_html__( 'Synced', 'shopify-woo-bridge' ) . ': ' . esc_html( $last_synced );
+			$status = esc_html__( 'Media synced', 'shopify-woo-bridge' ) . ': ' . esc_html( $last_synced );
 		}
 
 		if ( '' !== $last_synced && '' !== $last_sig && '' !== $current_sig && ! hash_equals( $last_sig, $current_sig ) ) {
@@ -1056,9 +1058,25 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			return is_array( $items ) ? $items : array();
 		}
 
+		$last_stock_sync_by_item_id = array();
+		if ( in_array( $mapping_state, array( 'stock-synced', 'stock-not-synced' ), true ) ) {
+			$shopify_item_ids = array();
+			foreach ( (array) $items as $item ) {
+				$shopify_item_id = trim( (string) $this->get_item_value( $item, 'shopify_item_id', '' ) );
+				if ( '' !== $shopify_item_id ) {
+					$shopify_item_ids[] = $shopify_item_id;
+				}
+			}
+
+			if ( ! empty( $shopify_item_ids ) ) {
+				$last_stock_sync_by_item_id = SWB_DB::get_last_successful_stock_sync_by_item_ids( $shopify_item_ids );
+			}
+		}
+
 		$filtered = array();
 		foreach ( (array) $items as $item ) {
 			$is_enabled = (int) $this->get_item_value( $item, 'is_enabled', 0 );
+			$shopify_item_id = trim( (string) $this->get_item_value( $item, 'shopify_item_id', '' ) );
 
 			if ( 'enabled' === $mapping_state && 1 === $is_enabled ) {
 				$filtered[] = $item;
@@ -1083,6 +1101,18 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			if ( 'not-synced' === $mapping_state && $this->is_mapping_not_synced_for_filter( $item ) ) {
 				$filtered[] = $item;
 				continue;
+			}
+
+			if ( 'stock-synced' === $mapping_state && '' !== $shopify_item_id && isset( $last_stock_sync_by_item_id[ $shopify_item_id ] ) && '' !== (string) $last_stock_sync_by_item_id[ $shopify_item_id ] ) {
+				$filtered[] = $item;
+				continue;
+			}
+
+			if ( 'stock-not-synced' === $mapping_state ) {
+				if ( '' === $shopify_item_id || ! isset( $last_stock_sync_by_item_id[ $shopify_item_id ] ) || '' === (string) $last_stock_sync_by_item_id[ $shopify_item_id ] ) {
+					$filtered[] = $item;
+					continue;
+				}
 			}
 		}
 
