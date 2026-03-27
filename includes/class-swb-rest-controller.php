@@ -301,6 +301,18 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_updated', 'new_stock' => $new_quantity ) );
 		}
 
+		SWB_DB::log_stock_update(
+			array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'wc_product_id'   => $target_product->get_id(),
+				'old_stock'       => $current_stock,
+				'new_stock'       => $new_quantity,
+				'source'          => 'webhook',
+				'status'          => 'success',
+			)
+		);
+
 		SWB_Logger::info( 'Stock update skipped: Quantity is already correct.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_target_id' => $target_product->get_id(), 'stock' => $current_stock ) );
 		return rest_ensure_response( array( 'status' => 'success', 'reason' => 'stock_unchanged', 'new_stock' => $new_quantity ) );
 	}

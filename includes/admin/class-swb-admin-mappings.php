@@ -1231,14 +1231,51 @@ class SWB_Admin_Mappings {
 		$current_stock = $product->get_stock_quantity();
 
 		if ( $current_stock === $new_stock ) {
+			SWB_DB::log_stock_update(
+				array(
+					'shopify_item_id' => $shopify_item_id,
+					'wc_sku'          => $wc_sku,
+					'wc_product_id'   => $product_id,
+					'old_stock'       => $current_stock,
+					'new_stock'       => $new_stock,
+					'source'          => 'manual',
+					'status'          => 'success',
+				)
+			);
+
 			return 'unchanged';
 		}
 
 		$result = wc_update_product_stock( $product, $new_stock, 'set' );
 		if ( is_wp_error( $result ) ) {
+			SWB_DB::log_stock_update(
+				array(
+					'shopify_item_id' => $shopify_item_id,
+					'wc_sku'          => $wc_sku,
+					'wc_product_id'   => $product_id,
+					'old_stock'       => $current_stock,
+					'new_stock'       => $new_stock,
+					'source'          => 'manual',
+					'status'          => 'failed',
+					'error_message'   => $result->get_error_message(),
+				)
+			);
+
 			SWB_Logger::error( 'Bulk stock sync failed during stock update.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_product_id' => $product_id, 'error' => $result->get_error_message() ) );
 			return 'failed';
 		}
+
+		SWB_DB::log_stock_update(
+			array(
+				'shopify_item_id' => $shopify_item_id,
+				'wc_sku'          => $wc_sku,
+				'wc_product_id'   => $product_id,
+				'old_stock'       => $current_stock,
+				'new_stock'       => $new_stock,
+				'source'          => 'manual',
+				'status'          => 'success',
+			)
+		);
 
 		SWB_Logger::info( 'Bulk stock sync updated stock successfully.', array( 'shopify_item_id' => $shopify_item_id, 'wc_sku' => $wc_sku, 'wc_product_id' => $product_id, 'old_stock' => $current_stock, 'new_stock' => $new_stock ) );
 		return 'updated';

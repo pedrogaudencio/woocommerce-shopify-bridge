@@ -33,6 +33,13 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	const SELECTED_BULK_IMAGE_SYNC_BATCH_SIZE = 12;
 
 	/**
+	 * Last successful stock sync timestamps keyed by Shopify item ID.
+	 *
+	 * @var array<string,string>
+	 */
+	private $last_stock_sync_by_item_id = array();
+
+	/**
 	 * Read a mapping field regardless of row data shape.
 	 *
 	 * @param array|object $item Mapping row.
@@ -252,6 +259,8 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			case 'wc_sku':
 			case 'created_at':
 				return esc_html( $this->get_item_value( $item, $column_name ) );
+			case 'last_stock_synced':
+				return $this->column_last_stock_synced( $item );
 			case 'media_sync_status':
 				return $this->column_media_sync_status( $item );
 			case 'is_enabled':
@@ -619,6 +628,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			'shopify_item_id'    => __( 'Shopify Inventory ID', 'shopify-woo-bridge' ),
 			'shopify_product_id' => __( 'Shopify Product/Variant ID', 'shopify-woo-bridge' ),
 			'wc_sku'             => __( 'WooCommerce SKU', 'shopify-woo-bridge' ),
+			'last_stock_synced'  => __( 'Last Stock Synced', 'shopify-woo-bridge' ),
 			'media_sync_status'  => __( 'Media Sync Status', 'shopify-woo-bridge' ),
 			'is_enabled'         => __( 'Sync Enabled', 'shopify-woo-bridge' ),
 			'created_at'         => __( 'Mapped On', 'shopify-woo-bridge' ),
@@ -698,6 +708,77 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		if ( ! is_array( $this->items ) ) {
 			$this->items = array();
 		}
+
+		$this->prime_last_stock_sync_cache( $this->items );
+	}
+
+	/**
+	 * Prime stock sync timestamp cache for rows shown on the current page.
+	 *
+	 * @param array $items Mapping rows.
+	 * @return void
+	 */
+	private function prime_last_stock_sync_cache( $items ) {
+		$this->last_stock_sync_by_item_id = array();
+		$shopify_item_ids                 = array();
+
+		foreach ( (array) $items as $item ) {
+			$shopify_item_id = trim( (string) $this->get_item_value( $item, 'shopify_item_id', '' ) );
+			if ( '' !== $shopify_item_id ) {
+				$shopify_item_ids[] = $shopify_item_id;
+			}
+		}
+
+		if ( empty( $shopify_item_ids ) ) {
+			return;
+		}
+
+		$this->last_stock_sync_by_item_id = SWB_DB::get_last_successful_stock_sync_by_item_ids( $shopify_item_ids );
+	}
+
+	/**
+	 * Render last successful stock sync timestamp for a mapping row.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return string
+	 */
+	public function column_last_stock_synced( $item ) {
+		$shopify_item_id = trim( (string) $this->get_item_value( $item, 'shopify_item_id', '' ) );
+		if ( '' === $shopify_item_id ) {
+			return esc_html__( 'Not available', 'shopify-woo-bridge' );
+		}
+
+		if ( isset( $this->last_stock_sync_by_item_id[ $shopify_item_id ] ) && '' !== $this->last_stock_sync_by_item_id[ $shopify_item_id ] ) {
+			return esc_html( $this->format_stock_sync_datetime_for_display( $this->last_stock_sync_by_item_id[ $shopify_item_id ] ) );
+		}
+
+		return esc_html__( 'Never synced', 'shopify-woo-bridge' );
+	}
+
+	/**
+	 * Format stock sync datetime for admin display using site settings.
+	 *
+	 * @param string $mysql_datetime Datetime value from DB (Y-m-d H:i:s).
+	 * @return string
+	 */
+	private function format_stock_sync_datetime_for_display( $mysql_datetime ) {
+		$mysql_datetime = trim( (string) $mysql_datetime );
+		if ( '' === $mysql_datetime ) {
+			return '';
+		}
+
+		$format = trim( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ) );
+		if ( '' === $format ) {
+			$format = 'Y-m-d H:i:s';
+		}
+
+		// created_at is stored by MySQL, so convert from GMT timestamp into site timezone for display.
+		$timestamp = mysql2date( 'U', $mysql_datetime, true );
+		if ( ! $timestamp ) {
+			return $mysql_datetime;
+		}
+
+		return wp_date( $format, (int) $timestamp, wp_timezone() );
 	}
 
 	/**
@@ -937,6 +1018,19 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			$result = wc_update_product_stock( $product, $total_available, 'set' );
 
 			if ( is_wp_error( $result ) ) {
+				SWB_DB::log_stock_update(
+					array(
+						'shopify_item_id' => $shopify_item_id,
+						'wc_sku'          => $wc_sku,
+						'wc_product_id'   => $product_id,
+						'old_stock'       => $current_stock,
+						'new_stock'       => $total_available,
+						'source'          => 'manual',
+						'status'          => 'failed',
+						'error_message'   => $result->get_error_message(),
+					)
+				);
+
 				SWB_Logger::error( 'Manual stock update failed.', array(
 					'shopify_item_id' => $shopify_item_id,
 					'wc_sku'          => $wc_sku,
@@ -946,6 +1040,18 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				return false;
 			}
 
+			SWB_DB::log_stock_update(
+				array(
+					'shopify_item_id' => $shopify_item_id,
+					'wc_sku'          => $wc_sku,
+					'wc_product_id'   => $product_id,
+					'old_stock'       => $current_stock,
+					'new_stock'       => $total_available,
+					'source'          => 'manual',
+					'status'          => 'success',
+				)
+			);
+
 			SWB_Logger::info( 'Manual stock update successful.', array(
 				'shopify_item_id' => $shopify_item_id,
 				'wc_sku'          => $wc_sku,
@@ -954,6 +1060,18 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				'new_stock'       => $total_available,
 			) );
 		} else {
+			SWB_DB::log_stock_update(
+				array(
+					'shopify_item_id' => $shopify_item_id,
+					'wc_sku'          => $wc_sku,
+					'wc_product_id'   => $product_id,
+					'old_stock'       => $current_stock,
+					'new_stock'       => $current_stock,
+					'source'          => 'manual',
+					'status'          => 'success',
+				)
+			);
+
 			SWB_Logger::info( 'Manual sync: Stock already up to date.', array(
 				'shopify_item_id' => $shopify_item_id,
 				'wc_sku'          => $wc_sku,
