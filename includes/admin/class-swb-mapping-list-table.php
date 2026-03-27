@@ -40,6 +40,20 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	private $last_stock_sync_by_item_id = array();
 
 	/**
+	 * Last successful stock change payload keyed by Shopify item ID.
+	 *
+	 * @var array<string,array<string,mixed>>
+	 */
+	private $last_stock_change_by_item_id = array();
+
+	/**
+	 * Cached media sync sort data keyed by mapping ID.
+	 *
+	 * @var array<int,array<string,int>>
+	 */
+	private $media_sync_sort_data_by_mapping_id = array();
+
+	/**
 	 * Read a mapping field regardless of row data shape.
 	 *
 	 * @param array|object $item Mapping row.
@@ -181,6 +195,37 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	}
 
 	/**
+	 * Read sortable orderby value from request.
+	 *
+	 * @return string
+	 */
+	private static function get_orderby_filter() {
+		$allowed = array( 'last_stock_synced', 'media_sync_status', 'created_at' );
+		$value   = isset( $_REQUEST['orderby'] ) ? sanitize_key( $_REQUEST['orderby'] ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+		if ( ! in_array( $value, $allowed, true ) ) {
+			return '';
+		}
+
+		return $value;
+	}
+
+	/**
+	 * Read sortable order direction from request.
+	 *
+	 * @return string
+	 */
+	private static function get_order_direction_filter() {
+		$value = isset( $_REQUEST['order'] ) ? strtolower( sanitize_key( $_REQUEST['order'] ) ) : 'asc'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+		if ( ! in_array( $value, array( 'asc', 'desc' ), true ) ) {
+			return 'asc';
+		}
+
+		return $value;
+	}
+
+	/**
 	 * Build query args that preserve current list-table state.
 	 *
 	 * @return array
@@ -196,6 +241,12 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$mapping_state = self::get_mapping_state_filter();
 		if ( 'all' !== $mapping_state ) {
 			$args['swb_mapping_state'] = $mapping_state;
+		}
+
+		$orderby = self::get_orderby_filter();
+		if ( '' !== $orderby ) {
+			$args['orderby'] = $orderby;
+			$args['order']   = self::get_order_direction_filter();
 		}
 
 		if ( isset( $_REQUEST['s'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -261,6 +312,8 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				return esc_html( $this->get_item_value( $item, $column_name ) );
 			case 'last_stock_synced':
 				return $this->column_last_stock_synced( $item );
+			case 'last_stock_change':
+				return $this->column_last_stock_change( $item );
 			case 'media_sync_status':
 				return $this->column_media_sync_status( $item );
 			case 'is_enabled':
@@ -629,6 +682,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			'shopify_product_id' => __( 'Shopify Product/Variant ID', 'shopify-woo-bridge' ),
 			'wc_sku'             => __( 'WooCommerce SKU', 'shopify-woo-bridge' ),
 			'last_stock_synced'  => __( 'Last Stock Synced', 'shopify-woo-bridge' ),
+			'last_stock_change'  => __( 'Last Stock Change', 'shopify-woo-bridge' ),
 			'media_sync_status'  => __( 'Media Sync Status', 'shopify-woo-bridge' ),
 			'is_enabled'         => __( 'Sync Enabled', 'shopify-woo-bridge' ),
 			'created_at'         => __( 'Mapped On', 'shopify-woo-bridge' ),
@@ -643,7 +697,11 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return array
 	 */
 	public function get_sortable_columns() {
-		return array(); // Disable sorting for now
+		return array(
+			'last_stock_synced' => array( 'last_stock_synced', false ),
+			'media_sync_status' => array( 'media_sync_status', false ),
+			'created_at'        => array( 'created_at', true ),
+		);
 	}
 
 	/**
@@ -678,10 +736,13 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		/** Process bulk action */
 		$this->process_bulk_action();
 
-		$per_page     = max( 1, (int) $this->get_items_per_page( 'mappings_per_page', 20 ) );
+		$per_page      = max( 1, (int) $this->get_items_per_page( 'mappings_per_page', 20 ) );
 		$mapping_state = self::get_mapping_state_filter();
+		$orderby       = self::get_orderby_filter();
+		$order         = self::get_order_direction_filter();
+		$has_sort      = '' !== $orderby;
 
-		if ( 'all' === $mapping_state ) {
+		if ( 'all' === $mapping_state && ! $has_sort ) {
 			$total_items  = (int) self::record_count();
 			$total_pages  = max( 1, (int) ceil( $total_items / $per_page ) );
 			$current_page = min( $this->get_pagenum(), $total_pages );
@@ -689,7 +750,12 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		} else {
 			$base_total    = (int) self::record_count();
 			$all_items     = $base_total > 0 ? self::get_mappings( $base_total, 1 ) : array();
-			$filtered      = $this->filter_items_by_mapping_state( $all_items, $mapping_state );
+			$filtered      = 'all' === $mapping_state ? $all_items : $this->filter_items_by_mapping_state( $all_items, $mapping_state );
+
+			if ( $has_sort ) {
+				$this->sort_items_for_list_table( $filtered, $orderby, $order );
+			}
+
 			$total_items   = count( $filtered );
 			$total_pages   = max( 1, (int) ceil( $total_items / $per_page ) );
 			$current_page  = min( $this->get_pagenum(), $total_pages );
@@ -713,6 +779,178 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	}
 
 	/**
+	 * Sort list table items by supported orderby values.
+	 *
+	 * @param array  $items Items to sort.
+	 * @param string $orderby Supported orderby key.
+	 * @param string $order asc|desc.
+	 * @return void
+	 */
+	private function sort_items_for_list_table( &$items, $orderby, $order ) {
+		if ( ! is_array( $items ) || count( $items ) < 2 ) {
+			return;
+		}
+
+		$direction = 'desc' === $order ? -1 : 1;
+
+		if ( 'last_stock_synced' === $orderby ) {
+			$this->prime_last_stock_sync_cache( $items );
+		}
+
+		if ( 'media_sync_status' === $orderby ) {
+			$this->media_sync_sort_data_by_mapping_id = array();
+		}
+
+		usort(
+			$items,
+			function ( $a, $b ) use ( $orderby, $direction ) {
+				$comparison = 0;
+
+				if ( 'created_at' === $orderby ) {
+					$comparison = strcmp(
+						(string) $this->get_item_value( $a, 'created_at', '' ),
+						(string) $this->get_item_value( $b, 'created_at', '' )
+					);
+				} elseif ( 'last_stock_synced' === $orderby ) {
+					$comparison = $this->compare_last_stock_synced_sort_values( $a, $b );
+				} elseif ( 'media_sync_status' === $orderby ) {
+					$comparison = $this->compare_media_sync_status_sort_values( $a, $b );
+				}
+
+				if ( 0 === $comparison ) {
+					$comparison = absint( $this->get_item_value( $a, 'id', 0 ) ) <=> absint( $this->get_item_value( $b, 'id', 0 ) );
+				}
+
+				return $comparison * $direction;
+			}
+		);
+	}
+
+	/**
+	 * Compare items by last successful stock sync timestamp.
+	 *
+	 * @param array|object $a Item A.
+	 * @param array|object $b Item B.
+	 * @return int
+	 */
+	private function compare_last_stock_synced_sort_values( $a, $b ) {
+		$a_timestamp = $this->get_last_stock_synced_timestamp_for_sort( $a );
+		$b_timestamp = $this->get_last_stock_synced_timestamp_for_sort( $b );
+
+		return $a_timestamp <=> $b_timestamp;
+	}
+
+	/**
+	 * Get UNIX timestamp used for Last Stock Synced sorting.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return int
+	 */
+	private function get_last_stock_synced_timestamp_for_sort( $item ) {
+		$shopify_item_id = trim( (string) $this->get_item_value( $item, 'shopify_item_id', '' ) );
+		if ( '' === $shopify_item_id || ! isset( $this->last_stock_sync_by_item_id[ $shopify_item_id ] ) ) {
+			return 0;
+		}
+
+		$last_synced = (string) $this->last_stock_sync_by_item_id[ $shopify_item_id ];
+		if ( '' === $last_synced ) {
+			return 0;
+		}
+
+		$timestamp = (int) mysql2date( 'U', $last_synced, true );
+
+		return $timestamp > 0 ? $timestamp : 0;
+	}
+
+	/**
+	 * Compare items by media sync status rank and timestamp.
+	 *
+	 * @param array|object $a Item A.
+	 * @param array|object $b Item B.
+	 * @return int
+	 */
+	private function compare_media_sync_status_sort_values( $a, $b ) {
+		$a_data = $this->get_media_sync_status_sort_data( $a );
+		$b_data = $this->get_media_sync_status_sort_data( $b );
+
+		if ( $a_data['rank'] !== $b_data['rank'] ) {
+			return $a_data['rank'] <=> $b_data['rank'];
+		}
+
+		return $a_data['timestamp'] <=> $b_data['timestamp'];
+	}
+
+	/**
+	 * Build sortable media status metadata for a mapping row.
+	 *
+	 * Rank order (asc): invalidated, not synced, synced, not available.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return array<string,int>
+	 */
+	private function get_media_sync_status_sort_data( $item ) {
+		$mapping_id = absint( $this->get_item_value( $item, 'id', 0 ) );
+		if ( $mapping_id > 0 && isset( $this->media_sync_sort_data_by_mapping_id[ $mapping_id ] ) ) {
+			return $this->media_sync_sort_data_by_mapping_id[ $mapping_id ];
+		}
+
+		$data = array(
+			'rank'      => 3,
+			'timestamp' => 0,
+		);
+
+		$wc_sku = (string) $this->get_item_value( $item, 'wc_sku', '' );
+		if ( '' === $wc_sku ) {
+			if ( $mapping_id > 0 ) {
+				$this->media_sync_sort_data_by_mapping_id[ $mapping_id ] = $data;
+			}
+
+			return $data;
+		}
+
+		$last_result = (string) get_option( 'swb_mapping_media_sync_result_' . $mapping_id, '' );
+		if ( 'invalidated' === $last_result ) {
+			$data['rank'] = 0;
+			if ( $mapping_id > 0 ) {
+				$this->media_sync_sort_data_by_mapping_id[ $mapping_id ] = $data;
+			}
+
+			return $data;
+		}
+
+		$product_id = $this->find_wc_product_id_by_sku_for_status( $wc_sku );
+		if ( $product_id <= 0 ) {
+			$data['rank'] = 1;
+			if ( $mapping_id > 0 ) {
+				$this->media_sync_sort_data_by_mapping_id[ $mapping_id ] = $data;
+			}
+
+			return $data;
+		}
+
+		$product     = wc_get_product( $product_id );
+		$last_synced = (string) get_post_meta( $product_id, 'shopify_sync_last_media_synced_at', true );
+		$last_sig    = (string) get_post_meta( $product_id, 'shopify_sync_last_media_signature', true );
+		$current_sig = $this->build_current_local_media_signature( $product );
+
+		if ( '' !== $last_synced && '' !== $last_sig && '' !== $current_sig && ! hash_equals( $last_sig, $current_sig ) ) {
+			$data['rank'] = 0;
+			$data['timestamp'] = (int) mysql2date( 'U', $last_synced, true );
+		} elseif ( '' === $last_synced ) {
+			$data['rank'] = 1;
+		} else {
+			$data['rank'] = 2;
+			$data['timestamp'] = (int) mysql2date( 'U', $last_synced, true );
+		}
+
+		if ( $mapping_id > 0 ) {
+			$this->media_sync_sort_data_by_mapping_id[ $mapping_id ] = $data;
+		}
+
+		return $data;
+	}
+
+	/**
 	 * Prime stock sync timestamp cache for rows shown on the current page.
 	 *
 	 * @param array $items Mapping rows.
@@ -720,6 +958,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 */
 	private function prime_last_stock_sync_cache( $items ) {
 		$this->last_stock_sync_by_item_id = array();
+		$this->last_stock_change_by_item_id = array();
 		$shopify_item_ids                 = array();
 
 		foreach ( (array) $items as $item ) {
@@ -734,6 +973,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		}
 
 		$this->last_stock_sync_by_item_id = SWB_DB::get_last_successful_stock_sync_by_item_ids( $shopify_item_ids );
+		$this->last_stock_change_by_item_id = SWB_DB::get_last_successful_stock_change_by_item_ids( $shopify_item_ids );
 	}
 
 	/**
@@ -753,6 +993,29 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		}
 
 		return esc_html__( 'Never synced', 'shopify-woo-bridge' );
+	}
+
+	/**
+	 * Render last successful stock change values for a mapping row.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return string
+	 */
+	public function column_last_stock_change( $item ) {
+		$shopify_item_id = trim( (string) $this->get_item_value( $item, 'shopify_item_id', '' ) );
+		if ( '' === $shopify_item_id ) {
+			return esc_html__( 'Not available', 'shopify-woo-bridge' );
+		}
+
+		if ( ! isset( $this->last_stock_change_by_item_id[ $shopify_item_id ] ) ) {
+			return esc_html__( 'No history', 'shopify-woo-bridge' );
+		}
+
+		$change    = (array) $this->last_stock_change_by_item_id[ $shopify_item_id ];
+		$old_stock = array_key_exists( 'old_stock', $change ) && null !== $change['old_stock'] ? (string) intval( $change['old_stock'] ) : '-';
+		$new_stock = array_key_exists( 'new_stock', $change ) && null !== $change['new_stock'] ? (string) intval( $change['new_stock'] ) : '-';
+
+		return esc_html( $old_stock . ' -> ' . $new_stock );
 	}
 
 	/**

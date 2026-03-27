@@ -488,6 +488,64 @@ class SWB_DB {
 	}
 
 	/**
+	 * Get last successful stock change values for Shopify inventory item IDs.
+	 *
+	 * @param array $shopify_item_ids Shopify inventory item IDs.
+	 * @return array<string,array<string,mixed>> Stock change payload keyed by Shopify item ID.
+	 */
+	public static function get_last_successful_stock_change_by_item_ids( $shopify_item_ids ) {
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'swb_stock_history';
+
+		$shopify_item_ids = array_values(
+			array_unique(
+				array_filter(
+					array_map( 'strval', (array) $shopify_item_ids )
+				)
+			)
+		);
+
+		if ( empty( $shopify_item_ids ) ) {
+			return array();
+		}
+
+		$placeholders = implode( ',', array_fill( 0, count( $shopify_item_ids ), '%s' ) );
+		$query        = "
+			SELECT h.shopify_item_id, h.old_stock, h.new_stock, h.created_at
+			FROM {$table_name} AS h
+			INNER JOIN (
+				SELECT shopify_item_id, MAX(id) AS latest_id
+				FROM {$table_name}
+				WHERE status = 'success'
+				AND shopify_item_id IN ({$placeholders})
+				GROUP BY shopify_item_id
+			) AS latest ON latest.latest_id = h.id
+		";
+
+		$rows = $wpdb->get_results( $wpdb->prepare( $query, $shopify_item_ids ), 'ARRAY_A' );
+
+		if ( empty( $rows ) ) {
+			return array();
+		}
+
+		$results = array();
+		foreach ( $rows as $row ) {
+			$item_id = isset( $row['shopify_item_id'] ) ? (string) $row['shopify_item_id'] : '';
+			if ( '' === $item_id ) {
+				continue;
+			}
+
+			$results[ $item_id ] = array(
+				'old_stock'  => array_key_exists( 'old_stock', $row ) ? $row['old_stock'] : null,
+				'new_stock'  => array_key_exists( 'new_stock', $row ) ? $row['new_stock'] : null,
+				'created_at' => isset( $row['created_at'] ) ? (string) $row['created_at'] : '',
+			);
+		}
+
+		return $results;
+	}
+
+	/**
 	 * Get current stock for a mapped product.
 	 *
 	 * @param string $shopify_item_id The Shopify inventory item ID.
