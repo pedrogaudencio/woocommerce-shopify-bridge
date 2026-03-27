@@ -147,7 +147,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @return string
 	 */
 	private static function get_mapping_state_filter() {
-		$allowed = array( 'all', 'enabled', 'invalidated', 'disabled', 'not-synced' );
+		$allowed = array( 'all', 'enabled', 'invalidated', 'disabled', 'not-synced', 'synced' );
 		$value   = isset( $_REQUEST['swb_mapping_state'] ) ? sanitize_key( $_REQUEST['swb_mapping_state'] ) : 'all'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 
 		if ( ! in_array( $value, $allowed, true ) ) {
@@ -228,6 +228,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			<select name="swb_mapping_state" id="swb-mapping-state-filter">
 				<option value="all" <?php selected( $current_state_filter, 'all' ); ?>><?php esc_html_e( 'All statuses', 'shopify-woo-bridge' ); ?></option>
 				<option value="enabled" <?php selected( $current_state_filter, 'enabled' ); ?>><?php esc_html_e( 'Enabled', 'shopify-woo-bridge' ); ?></option>
+				<option value="synced" <?php selected( $current_state_filter, 'synced' ); ?>><?php esc_html_e( 'Synced', 'shopify-woo-bridge' ); ?></option>
 				<option value="invalidated" <?php selected( $current_state_filter, 'invalidated' ); ?>><?php esc_html_e( 'Invalidated', 'shopify-woo-bridge' ); ?></option>
 				<option value="disabled" <?php selected( $current_state_filter, 'disabled' ); ?>><?php esc_html_e( 'Disabled', 'shopify-woo-bridge' ); ?></option>
 				<option value="not-synced" <?php selected( $current_state_filter, 'not-synced' ); ?>><?php esc_html_e( 'Not synced', 'shopify-woo-bridge' ); ?></option>
@@ -730,6 +731,11 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				continue;
 			}
 
+			if ( 'synced' === $mapping_state && $this->is_mapping_synced_for_filter( $item ) ) {
+				$filtered[] = $item;
+				continue;
+			}
+
 			if ( 'not-synced' === $mapping_state && $this->is_mapping_not_synced_for_filter( $item ) ) {
 				$filtered[] = $item;
 				continue;
@@ -789,6 +795,31 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 		$last_synced = (string) get_post_meta( $product_id, 'shopify_sync_last_media_synced_at', true );
 		return '' === $last_synced; // Not synced if no sync timestamp exists
+	}
+
+	/**
+	 * Determine whether a mapping should be treated as synced for filtering.
+	 *
+	 * @param array|object $item Mapping row.
+	 * @return bool
+	 */
+	private function is_mapping_synced_for_filter( $item ) {
+		if ( $this->is_mapping_invalidated_for_filter( $item ) ) {
+			return false;
+		}
+
+		$wc_sku = (string) $this->get_item_value( $item, 'wc_sku', '' );
+		if ( '' === $wc_sku ) {
+			return false;
+		}
+
+		$product_id = $this->find_wc_product_id_by_sku_for_status( $wc_sku );
+		if ( $product_id <= 0 ) {
+			return false;
+		}
+
+		$last_synced = (string) get_post_meta( $product_id, 'shopify_sync_last_media_synced_at', true );
+		return '' !== $last_synced;
 	}
 
 	/**
