@@ -253,8 +253,12 @@ class SWB_DB {
 		$where_parts = array();
 
 		if ( ! empty( $search ) ) {
-			$where_parts[] = 'm.shopify_item_id LIKE %s';
-			$args[]        = '%' . $wpdb->esc_like( $search ) . '%';
+			$search_like   = '%' . $wpdb->esc_like( $search ) . '%';
+			$where_parts[] = '(m.shopify_item_id LIKE %s OR m.shopify_product_id LIKE %s OR m.shopify_variant_id LIKE %s OR m.wc_sku LIKE %s)';
+			$args[]        = $search_like;
+			$args[]        = $search_like;
+			$args[]        = $search_like;
+			$args[]        = $search_like;
 		}
 
 		$product_type_where = self::get_product_type_where_clause( $product_type, 'm.wc_sku' );
@@ -298,8 +302,12 @@ class SWB_DB {
 		$where_parts = array();
 
 		if ( ! empty( $search ) ) {
-			$where_parts[] = 'm.shopify_item_id LIKE %s';
-			$args[]        = '%' . $wpdb->esc_like( $search ) . '%';
+			$search_like   = '%' . $wpdb->esc_like( $search ) . '%';
+			$where_parts[] = '(m.shopify_item_id LIKE %s OR m.shopify_product_id LIKE %s OR m.shopify_variant_id LIKE %s OR m.wc_sku LIKE %s)';
+			$args[]        = $search_like;
+			$args[]        = $search_like;
+			$args[]        = $search_like;
+			$args[]        = $search_like;
 		}
 
 		$product_type_where = self::get_product_type_where_clause( $product_type, 'm.wc_sku' );

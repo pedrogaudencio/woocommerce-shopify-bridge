@@ -332,7 +332,7 @@ class SWB_Admin_Mappings {
 							<?php
 							echo '<input type="hidden" name="page" value="' . esc_attr( $page_slug ) . '" />';
 							echo '<input type="hidden" name="tab" value="mappings" />';
-							$mapping_table->search_box( __( 'Search Shopify Item ID', 'shopify-woo-bridge' ), 'swb-mappings' );
+							$mapping_table->search_box( __( 'Search', 'shopify-woo-bridge' ), 'swb-mappings' );
 							$mapping_table->display();
 							?>
 						</form>
