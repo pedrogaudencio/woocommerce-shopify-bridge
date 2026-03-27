@@ -35,16 +35,21 @@
 			return '';
 		}
 
-		// Keep non-image-sync statuses unchanged.
-		if (message.indexOf('Downloaded:') === -1 && message.indexOf('Reused:') === -1) {
-			return message;
+		if (message.indexOf('Downloaded:') !== -1 || message.indexOf('Reused:') !== -1) {
+			return message
+				.replace('. Downloaded:', '.\nDownloaded:')
+				.replace(', Reused:', ',\nReused:')
+				.replace(', Variation gallery applied:', ',\nVariation gallery applied:')
+				.replace(', Gallery applied:', ',\nGallery applied:');
 		}
 
-		return message
-			.replace('. Downloaded:', '.\nDownloaded:')
-			.replace(', Reused:', ',\nReused:')
-			.replace(', Variation gallery applied:', ',\nVariation gallery applied:')
-			.replace(', Gallery applied:', ',\nGallery applied:');
+		if (message.indexOf('Old stock:') !== -1 && message.indexOf('New stock:') !== -1) {
+			return message
+				.replace('. Old stock:', '.\nOld stock:')
+				.replace(', New stock:', ',\nNew stock:');
+		}
+
+		return message;
 	}
 
 	function ensureOverlay() {
@@ -462,6 +467,35 @@
 		return !!(bulkActionContext && bulkActionContext.value === 'bulk-sync-images');
 	}
 
+	function canRunBulkStockSyncAjax(form) {
+		if (!(form instanceof HTMLFormElement)) {
+			return false;
+		}
+
+		if (!localized || !localized.ajaxUrl || !localized.bulkStockSyncStartAction || !localized.bulkStockSyncTickAction || !localized.bulkImageSyncAjaxNonce) {
+			return false;
+		}
+
+		var topBulkStockInput = form.querySelector('input[name="swb_bulk_sync_stock"]');
+		if (!topBulkStockInput || topBulkStockInput.value !== '1') {
+			return false;
+		}
+
+		return !form.querySelector('select[name="action"]') && !form.querySelector('select[name="action2"]');
+	}
+
+	function canRunSelectedBulkStockSyncAjax(form, bulkActionContext) {
+		if (!(form instanceof HTMLFormElement)) {
+			return false;
+		}
+
+		if (!localized || !localized.ajaxUrl || !localized.selectedBulkStockSyncStartAction || !localized.selectedBulkStockSyncTickAction || !localized.bulkImageSyncAjaxNonce) {
+			return false;
+		}
+
+		return !!(bulkActionContext && bulkActionContext.value === 'bulk-sync-stock');
+	}
+
 	function getSelectedMappingIds(form) {
 		var nodes = form.querySelectorAll('tbody .check-column input[type="checkbox"][name="bulk-delete[]"]:checked');
 		var ids = [];
@@ -692,6 +726,140 @@
 		});
 	}
 
+	function runBulkStockSyncAjaxLoop(form) {
+		if (form.getAttribute('data-swb-ajax-running') === '1') {
+			return;
+		}
+
+		form.setAttribute('data-swb-ajax-running', '1');
+		setBulkActionState('stock');
+		showPersistentOverlayForBulkAction('stock', { action: 'stock', handled: 0, processed: 0, total: 0, indeterminate: true });
+
+		var productTypeInput = form.querySelector('input[name="swb_product_type"]');
+		var productType = productTypeInput ? (productTypeInput.value || 'all') : 'all';
+
+		postAjaxForm(localized.bulkStockSyncStartAction, {
+			nonce: localized.bulkImageSyncAjaxNonce,
+			swb_product_type: productType
+		}).then(function (json) {
+			if (!json || !json.success || !json.data || !json.data.jobToken) {
+				throw new Error((json && json.data && json.data.message) ? json.data.message : 'Could not start bulk stock sync job.');
+			}
+
+			var jobToken = json.data.jobToken;
+			showPersistentOverlayForBulkAction('stock', normalizeProgress(json.data.progress));
+
+			var tick = function () {
+				postAjaxForm(localized.bulkStockSyncTickAction, {
+					nonce: localized.bulkImageSyncAjaxNonce,
+					job_token: jobToken
+				}).then(function (tickJson) {
+					if (!tickJson || !tickJson.success || !tickJson.data) {
+						throw new Error((tickJson && tickJson.data && tickJson.data.message) ? tickJson.data.message : 'Bulk stock sync tick failed.');
+					}
+
+					var data = tickJson.data;
+					showPersistentOverlayForBulkAction('stock', normalizeProgress(data.progress));
+
+					if (data.done) {
+						setBulkActionState(null);
+						if (data.redirectUrl) {
+							window.location.assign(data.redirectUrl);
+							return;
+						}
+
+						hideOverlay();
+						return;
+					}
+
+					window.setTimeout(tick, 50);
+				}).catch(function (error) {
+					setBulkActionState(null);
+					hideOverlay();
+					window.alert(error && error.message ? error.message : 'Bulk stock sync failed.');
+				});
+			};
+
+			window.setTimeout(tick, 50);
+		}).catch(function (error) {
+			setBulkActionState(null);
+			hideOverlay();
+			window.alert(error && error.message ? error.message : 'Could not start bulk stock sync.');
+		});
+	}
+
+	function runSelectedBulkStockSyncAjaxLoop(form, bulkActionContext) {
+		if (form.getAttribute('data-swb-ajax-running') === '1') {
+			return;
+		}
+
+		var mappingIds = getSelectedMappingIds(form);
+		if (!mappingIds.length) {
+			window.alert(getLocalizedString('noMappingsSelectedMessage', 'No mappings selected.'));
+			return;
+		}
+
+		form.setAttribute('data-swb-ajax-running', '1');
+		setBulkActionState('stock');
+		showPersistentOverlayForBulkAction('stock', {
+			action: 'stock',
+			handled: 0,
+			processed: 0,
+			total: mappingIds.length,
+			indeterminate: false
+		});
+
+		postAjaxForm(localized.selectedBulkStockSyncStartAction, {
+			nonce: localized.bulkImageSyncAjaxNonce,
+			mapping_ids: mappingIds,
+			state_args: getMappingsStateArgsFromUrl()
+		}).then(function (json) {
+			if (!json || !json.success || !json.data || !json.data.jobToken) {
+				throw new Error((json && json.data && json.data.message) ? json.data.message : 'Could not start selected bulk stock sync job.');
+			}
+
+			var jobToken = json.data.jobToken;
+			showPersistentOverlayForBulkAction('stock', normalizeProgress(json.data.progress));
+
+			var tick = function () {
+				postAjaxForm(localized.selectedBulkStockSyncTickAction, {
+					nonce: localized.bulkImageSyncAjaxNonce,
+					job_token: jobToken
+				}).then(function (tickJson) {
+					if (!tickJson || !tickJson.success || !tickJson.data) {
+						throw new Error((tickJson && tickJson.data && tickJson.data.message) ? tickJson.data.message : 'Selected bulk stock sync tick failed.');
+					}
+
+					var data = tickJson.data;
+					showPersistentOverlayForBulkAction('stock', normalizeProgress(data.progress));
+
+					if (data.done) {
+						setBulkActionState(null);
+						if (data.redirectUrl) {
+							window.location.assign(data.redirectUrl);
+							return;
+						}
+
+						hideOverlay();
+						return;
+					}
+
+					window.setTimeout(tick, 50);
+				}).catch(function (error) {
+					setBulkActionState(null);
+					hideOverlay();
+					window.alert(error && error.message ? error.message : 'Selected bulk stock sync failed.');
+				});
+			};
+
+			window.setTimeout(tick, 50);
+		}).catch(function (error) {
+			setBulkActionState(null);
+			hideOverlay();
+			window.alert(error && error.message ? error.message : 'Could not start selected bulk stock sync.');
+		});
+	}
+
 	document.addEventListener('click', function (event) {
 		var trigger = event.target.closest('[data-swb-long-action="1"]');
 		if (!trigger) {
@@ -709,6 +877,18 @@
 		}
 
 		var bulkActionContext = getBulkActionContext(form);
+
+		if (canRunSelectedBulkStockSyncAjax(form, bulkActionContext)) {
+			event.preventDefault();
+			runSelectedBulkStockSyncAjaxLoop(form, bulkActionContext);
+			return;
+		}
+
+		if (canRunBulkStockSyncAjax(form)) {
+			event.preventDefault();
+			runBulkStockSyncAjaxLoop(form);
+			return;
+		}
 
 		if (canRunSelectedBulkImageSyncAjax(form, bulkActionContext)) {
 			event.preventDefault();
