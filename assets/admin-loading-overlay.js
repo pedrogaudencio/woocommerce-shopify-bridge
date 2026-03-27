@@ -189,7 +189,9 @@
 		var processed = parseInt(getQueryParam('swb_progress_processed'), 10);
 		var total = parseInt(getQueryParam('swb_progress_total'), 10);
 		var changed = parseInt(getQueryParam('swb_progress_changed'), 10);
+		var updated = parseInt(getQueryParam('swb_progress_updated'), 10);
 		var unchanged = parseInt(getQueryParam('swb_progress_unchanged'), 10);
+		var skipped = parseInt(getQueryParam('swb_progress_skipped'), 10);
 		var failed = parseInt(getQueryParam('swb_progress_failed'), 10);
 
 		return {
@@ -198,7 +200,9 @@
 			processed: isNaN(processed) ? 0 : Math.max(0, processed),
 			total: isNaN(total) ? 0 : Math.max(0, total),
 			changed: isNaN(changed) ? 0 : Math.max(0, changed),
+			updated: isNaN(updated) ? 0 : Math.max(0, updated),
 			unchanged: isNaN(unchanged) ? 0 : Math.max(0, unchanged),
+			skipped: isNaN(skipped) ? 0 : Math.max(0, skipped),
 			failed: isNaN(failed) ? 0 : Math.max(0, failed),
 			statusMessage: getQueryParam('swb_progress_status_message') || '',
 			wcSku: getQueryParam('swb_progress_wc_sku') || '',
@@ -223,7 +227,9 @@
 		var total = progressMeta && typeof progressMeta.total === 'number' ? progressMeta.total : 0;
 		var indeterminate = !!(progressMeta && progressMeta.indeterminate);
 		var changed = progressMeta && typeof progressMeta.changed === 'number' ? progressMeta.changed : 0;
+		var updated = progressMeta && typeof progressMeta.updated === 'number' ? progressMeta.updated : 0;
 		var unchanged = progressMeta && typeof progressMeta.unchanged === 'number' ? progressMeta.unchanged : 0;
+		var skipped = progressMeta && typeof progressMeta.skipped === 'number' ? progressMeta.skipped : 0;
 		var failed = progressMeta && typeof progressMeta.failed === 'number' ? progressMeta.failed : 0;
 		var statusMessage = progressMeta && progressMeta.statusMessage ? progressMeta.statusMessage : '';
 		var wcSku = progressMeta && progressMeta.wcSku ? progressMeta.wcSku : '';
@@ -286,6 +292,11 @@
 			statusNode.textContent = interpolateTokens(
 				getLocalizedString('imageStatusSummaryTemplate', 'Image sync status - Changed: %changed%, Unchanged: %unchanged%, Failed: %failed%'),
 				{ changed: changed, unchanged: unchanged, failed: failed }
+			);
+		} else if (progressMeta && progressMeta.action === 'stock' && completed > 0) {
+			statusNode.textContent = interpolateTokens(
+				getLocalizedString('stockStatusSummaryTemplate', 'Stock sync status - Updated: %updated%, Unchanged: %unchanged%, Skipped: %skipped%, Failed: %failed%'),
+				{ updated: updated, unchanged: unchanged, skipped: skipped, failed: failed }
 			);
 		} else {
 			statusNode.textContent = '';
@@ -582,7 +593,9 @@
 			processed: Number(p.processed || 0),
 			total: Number(p.total || 0),
 			changed: Number(p.changed || 0),
+			updated: Number(p.updated || 0),
 			unchanged: Number(p.unchanged || 0),
+			skipped: Number(p.skipped || 0),
 			failed: Number(p.failed || 0),
 			statusMessage: p.statusMessage || '',
 			wcSku: p.wcSku || '',

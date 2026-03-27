@@ -200,6 +200,7 @@ class SWB_Admin_Mappings {
 				'indeterminateProgressText' => __( 'Processing...', 'shopify-woo-bridge' ),
 				'currentStatusTemplate' => __( 'Status: %status%', 'shopify-woo-bridge' ),
 				'imageStatusSummaryTemplate' => __( 'Image sync status - Changed: %changed%, Unchanged: %unchanged%, Failed: %failed%', 'shopify-woo-bridge' ),
+				'stockStatusSummaryTemplate' => __( 'Stock sync status - Updated: %updated%, Unchanged: %unchanged%, Skipped: %skipped%, Failed: %failed%', 'shopify-woo-bridge' ),
 				'currentItemTemplate' => __( 'Currently processing - SKU: %sku% | Inventory ID: %inventory%', 'shopify-woo-bridge' ),
 				'missingValue' => __( 'N/A', 'shopify-woo-bridge' ),
 				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
@@ -442,7 +443,23 @@ class SWB_Admin_Mappings {
 	 * Handle bulk manual stock sync for all eligible mappings.
 	 */
 	public function handle_bulk_sync_stock() {
-		if ( ! isset( $_POST['swb_bulk_sync_stock'] ) ) {
+		if ( isset( $_POST['swb_bulk_sync_stock'] ) ) {
+			if ( ! current_user_can( 'manage_woocommerce' ) ) {
+				wp_die( 'Unauthorized.' );
+			}
+
+			if ( ! isset( $_POST['swb_bulk_sync_stock_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['swb_bulk_sync_stock_nonce'] ) ), 'swb_bulk_sync_stock_action' ) ) {
+				wp_die( 'Security check failed.' );
+			}
+
+			SWB_Logger::info( 'Top Sync Stock button submitted. Starting resumable bulk stock sync job.' );
+
+			$current_product_type = $this->normalize_product_type_filter( isset( $_POST['swb_product_type'] ) ? sanitize_key( wp_unslash( $_POST['swb_product_type'] ) ) : 'all' );
+			$this->start_bulk_stock_sync_job( $current_product_type );
+			exit;
+		}
+
+		if ( ! isset( $_GET['swb_bulk_sync_stock_continue'], $_GET['swb_bulk_sync_stock_job'] ) ) {
 			return;
 		}
 
@@ -450,95 +467,169 @@ class SWB_Admin_Mappings {
 			wp_die( 'Unauthorized.' );
 		}
 
-		if ( ! isset( $_POST['swb_bulk_sync_stock_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['swb_bulk_sync_stock_nonce'] ) ), 'swb_bulk_sync_stock_action' ) ) {
+		$job_token = preg_replace( '/[^a-zA-Z0-9]/', '', (string) wp_unslash( $_GET['swb_bulk_sync_stock_job'] ) );
+		if ( '' === $job_token ) {
+			$this->redirect_bulk_action_notice( 'error', __( 'Bulk stock sync session is invalid.', 'shopify-woo-bridge' ), 'all' );
+			exit;
+		}
+
+		if ( ! isset( $_GET['swb_job_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['swb_job_nonce'] ) ), 'swb_bulk_sync_stock_job_' . $job_token ) ) {
 			wp_die( 'Security check failed.' );
 		}
 
-		$current_product_type = $this->normalize_product_type_filter( isset( $_POST['swb_product_type'] ) ? sanitize_key( wp_unslash( $_POST['swb_product_type'] ) ) : 'all' );
+		$this->process_bulk_stock_sync_job( $job_token );
+		exit;
+	}
 
-		$api      = new SWB_Shopify_API_Client();
-		$products = $api->get_products();
-		if ( is_wp_error( $products ) ) {
-			$this->redirect_bulk_action_notice(
-				'error',
-				$products->get_error_message(),
-				$current_product_type
-			);
-			exit;
+	/**
+	 * Start a resumable bulk stock sync job and redirect to first batch request.
+	 *
+	 * @param string $product_type Product type filter.
+	 * @return void
+	 */
+	private function start_bulk_stock_sync_job( $product_type ) {
+		$job = $this->create_bulk_stock_sync_ajax_job( $product_type );
+		if ( is_wp_error( $job ) ) {
+			$this->redirect_bulk_action_notice( 'error', $job->get_error_message(), $product_type );
+			return;
 		}
 
-		$inventory_item_ids = $this->extract_inventory_item_ids_from_products( $products );
-		$levels_by_item     = $api->get_inventory_levels_for_item_ids( $inventory_item_ids );
-		if ( is_wp_error( $levels_by_item ) ) {
-			$this->redirect_bulk_action_notice(
-				'error',
-				$levels_by_item->get_error_message(),
-				$current_product_type
-			);
-			exit;
+		$this->redirect_bulk_stock_sync_job( $job['job_token'], $job['state']['product_type'], $job['state'] );
+	}
+
+	/**
+	 * Process one batch of a bulk stock sync job for GET request.
+	 *
+	 * @param string $job_token Job token.
+	 * @return void
+	 */
+	private function process_bulk_stock_sync_job( $job_token ) {
+		$option_key = $this->get_bulk_stock_sync_ajax_option_key( $job_token, false );
+		$state      = get_option( $option_key, null );
+
+		if ( ! is_array( $state ) || empty( $state['mapping_ids'] ) ) {
+			$this->redirect_bulk_action_notice( 'error', __( 'Bulk stock sync session expired. Please run it again.', 'shopify-woo-bridge' ), 'all' );
+			return;
 		}
 
-		$available_by_item = $this->build_inventory_totals_by_item( $levels_by_item );
+		$mapping_ids       = array_values( array_filter( array_map( 'absint', (array) $state['mapping_ids'] ) ) );
+		$offset            = isset( $state['offset'] ) ? absint( $state['offset'] ) : 0;
+		$batch_size        = $this->get_bulk_stock_sync_batch_size();
+		$max_index         = min( count( $mapping_ids ), $offset + $batch_size );
+		$available_by_item = isset( $state['available_by_item'] ) && is_array( $state['available_by_item'] ) ? $state['available_by_item'] : array();
+		$product_type      = isset( $state['product_type'] ) ? $this->normalize_product_type_filter( $state['product_type'] ) : 'all';
 
-		global $wpdb;
-		$table_name = $wpdb->prefix . 'swb_mappings';
+		for ( $index = $offset; $index < $max_index; $index++ ) {
+			$mapping_id = $mapping_ids[ $index ];
+			$mapping    = SWB_DB::get_mapping( $mapping_id );
 
-		$rows = $wpdb->get_results(
-			"
-			SELECT *
-			FROM {$table_name}
-			WHERE is_enabled = 1
-			ORDER BY id ASC
-			"
-		);
-
-		$processed = 0;
-		$updated   = 0;
-		$unchanged = 0;
-		$skipped   = 0;
-		$failed    = 0;
-
-		foreach ( $rows as $row ) {
-			$wc_sku = isset( $row->wc_sku ) ? trim( (string) $row->wc_sku ) : '';
-
-			if ( 'all' !== $current_product_type && ! $this->is_wc_sku_matching_product_type( $wc_sku, $current_product_type ) ) {
+			if ( ! $mapping ) {
+				$state['failed']                 = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
+				$state['current_status_message'] = __( 'Stock sync failed: Mapping not found.', 'shopify-woo-bridge' );
+				$state['current_wc_sku']         = '';
+				$state['current_shopify_item_id']= '';
 				continue;
 			}
 
-			$processed++;
-			$status = $this->sync_stock_for_mapping_from_levels( $row, $available_by_item );
+			$detail = $this->sync_stock_for_mapping_from_levels( $mapping, $available_by_item, true );
+			$status = isset( $detail['status'] ) ? (string) $detail['status'] : 'failed';
+			$state['current_status_message']  = isset( $detail['message'] ) ? (string) $detail['message'] : __( 'Stock sync processed mapping.', 'shopify-woo-bridge' );
+			$state['current_wc_sku']          = isset( $detail['wc_sku'] ) ? (string) $detail['wc_sku'] : '';
+			$state['current_shopify_item_id'] = isset( $detail['shopify_item_id'] ) ? (string) $detail['shopify_item_id'] : '';
 
 			if ( 'updated' === $status ) {
-				$updated++;
-				continue;
+				$state['updated'] = isset( $state['updated'] ) ? intval( $state['updated'] ) + 1 : 1;
+			} elseif ( 'unchanged' === $status ) {
+				$state['unchanged'] = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) + 1 : 1;
+			} elseif ( 'skipped' === $status ) {
+				$state['skipped'] = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+			} else {
+				$state['failed'] = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
 			}
-
-			if ( 'unchanged' === $status ) {
-				$unchanged++;
-				continue;
-			}
-
-			if ( 'skipped' === $status ) {
-				$skipped++;
-				continue;
-			}
-
-			$failed++;
 		}
 
-		$notice_type = $failed > 0 ? 'error' : 'success';
-		$message     = sprintf(
+		$state['offset'] = $max_index;
+
+		if ( $max_index < count( $mapping_ids ) ) {
+			update_option( $option_key, $state, false );
+			$this->redirect_bulk_stock_sync_job( $job_token, $product_type, $state );
+			return;
+		}
+
+		delete_option( $option_key );
+
+		$message = sprintf(
 			/* translators: 1: processed mappings, 2: updated mappings, 3: unchanged mappings, 4: skipped mappings, 5: failed mappings. */
 			__( 'Bulk stock sync complete. Processed: %1$d, Updated: %2$d, Unchanged: %3$d, Skipped: %4$d, Failed: %5$d.', 'shopify-woo-bridge' ),
-			$processed,
-			$updated,
-			$unchanged,
-			$skipped,
-			$failed
+			count( $mapping_ids ),
+			intval( isset( $state['updated'] ) ? $state['updated'] : 0 ),
+			intval( isset( $state['unchanged'] ) ? $state['unchanged'] : 0 ),
+			intval( isset( $state['skipped'] ) ? $state['skipped'] : 0 ),
+			intval( isset( $state['failed'] ) ? $state['failed'] : 0 )
 		);
 
-		$this->redirect_bulk_action_notice( $notice_type, $message, $current_product_type );
-		exit;
+		$notice_type = intval( isset( $state['failed'] ) ? $state['failed'] : 0 ) > 0 ? 'error' : 'success';
+
+		$this->redirect_bulk_action_notice( $notice_type, $message, $product_type );
+	}
+
+	/**
+	 * Redirect to next batch of bulk stock sync job with progress parameters.
+	 *
+	 * @param string $job_token Job token.
+	 * @param string $product_type Product type filter.
+	 * @param array  $state Current job state.
+	 * @return void
+	 */
+	private function redirect_bulk_stock_sync_job( $job_token, $product_type, $state = array() ) {
+		$updated   = isset( $state['updated'] ) ? absint( $state['updated'] ) : 0;
+		$unchanged = isset( $state['unchanged'] ) ? absint( $state['unchanged'] ) : 0;
+		$skipped   = isset( $state['skipped'] ) ? absint( $state['skipped'] ) : 0;
+		$failed    = isset( $state['failed'] ) ? absint( $state['failed'] ) : 0;
+		$handled   = $updated + $unchanged + $skipped + $failed;
+		$total     = isset( $state['total'] ) ? absint( $state['total'] ) : 0;
+		$wc_sku    = isset( $state['current_wc_sku'] ) ? sanitize_text_field( (string) $state['current_wc_sku'] ) : '';
+		$item_id   = isset( $state['current_shopify_item_id'] ) ? sanitize_text_field( (string) $state['current_shopify_item_id'] ) : '';
+		$status_message = isset( $state['current_status_message'] ) ? sanitize_text_field( (string) $state['current_status_message'] ) : '';
+
+		$redirect_args = array(
+			'page'                        => 'shopify-bridge-mappings',
+			'tab'                         => 'mappings',
+			'swb_bulk_sync_stock_continue' => '1',
+			'swb_bulk_sync_stock_job'      => $job_token,
+			'swb_job_nonce'               => wp_create_nonce( 'swb_bulk_sync_stock_job_' . $job_token ),
+			'swb_progress_action'         => 'stock',
+			'swb_progress_handled'        => $handled,
+			'swb_progress_processed'      => $handled,
+			'swb_progress_total'          => $total,
+			'swb_progress_wc_sku'         => $wc_sku,
+			'swb_progress_shopify_item_id' => $item_id,
+			'swb_progress_status_message' => $status_message,
+			'swb_progress_updated'        => $updated,
+			'swb_progress_unchanged'      => $unchanged,
+			'swb_progress_skipped'        => $skipped,
+			'swb_progress_failed'         => $failed,
+		);
+
+		if ( 'all' !== $product_type ) {
+			$redirect_args['swb_product_type'] = $this->normalize_product_type_filter( $product_type );
+		}
+
+		wp_safe_redirect( add_query_arg( $redirect_args, admin_url( 'admin.php' ) ) );
+	}
+
+	/**
+	 * Get batch size for bulk stock sync.
+	 *
+	 * @return int
+	 */
+	private function get_bulk_stock_sync_batch_size() {
+		/**
+		 * Filter the default batch size for bulk stock sync jobs.
+		 *
+		 * @param int $batch_size Default batch size (8 mappings).
+		 */
+		return (int) apply_filters( 'swb_bulk_stock_sync_batch_size', 8 );
 	}
 
 	/**
