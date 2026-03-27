@@ -84,6 +84,9 @@ The export action:
 - Credentials are only available to users with WooCommerce management capability.
 - Export action is protected by nonce and capability checks.
 - Webhook endpoint validates Shopify HMAC signatures.
+- Webhook endpoint enforces freshness (`X-Shopify-Triggered-At`) and replay protection (`X-Shopify-Webhook-Id`).
+- Public stock read endpoints now require signed GET headers (unless called by an authenticated admin with `manage_woocommerce`).
+- For full signed-request format and examples, see `woocommerce-shopify-bridge/docs/STOCK_API.md`.
 
 ## 7. Manual Webhook Test
 

@@ -44,13 +44,77 @@ wp_swb_stock_history (
 ## Security Behavior
 
 - Permission callbacks always enforce authentication; kill switches do not open anonymous access.
-- Unsigned requests are rejected with HTTP `401` (`swb_missing_signature` / `swb_invalid_signature`).
+- Unsigned requests are rejected with HTTP `401`.
 - Kill-switch responses (`global_sync_disabled`, `stock_api_disabled`) are returned only after authentication succeeds.
 - Shopify pagination next links are restricted to:
   - `https` scheme,
   - exact configured Shopify store host,
   - path prefix `/admin/api/`.
   Invalid next links are ignored and logged.
+
+### Signed GET Authentication (External Callers)
+
+For callers that are **not** authenticated WordPress admins, stock read endpoints require signed headers:
+
+- `X-SWB-Timestamp`: Unix timestamp (seconds)
+- `X-SWB-Signature`: lowercase hex `HMAC-SHA256`
+
+#### Canonical payload
+
+Build the signature payload as 4 lines joined by `\n`:
+
+1. HTTP method (uppercase), e.g. `GET`
+2. Route path (example: `/shopify-bridge/v1/stock/44611180265515/history`)
+3. Sorted query string (RFC3986, no leading `?`; empty string if none)
+4. Same timestamp value sent in `X-SWB-Timestamp`
+
+Then compute:
+
+- `signature = hex(HMAC_SHA256(canonical_payload, webhook_secret))`
+
+#### Freshness and replay protections
+
+- Requests outside the freshness window (10 minutes) are rejected.
+- Reuse of the same signed request is treated as replay and rejected.
+
+#### Copyable example (history endpoint)
+
+```bash
+SECRET='your_webhook_secret_here'
+BASE='https://your-site.com'
+ITEM_ID='44611180265515'
+ROUTE="/shopify-bridge/v1/stock/${ITEM_ID}/history"
+QUERY='limit=50'
+TS="$(date +%s)"
+
+CANONICAL=$(printf 'GET\n%s\n%s\n%s' "$ROUTE" "$QUERY" "$TS")
+SIG=$(printf '%s' "$CANONICAL" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/^.* //')
+
+curl -sS "${BASE}/wp-json${ROUTE}?${QUERY}" \
+  -H "X-SWB-Timestamp: ${TS}" \
+  -H "X-SWB-Signature: ${SIG}" \
+  -H "Accept: application/json"
+```
+
+#### Python helper
+
+```bash
+python3 - <<'PY'
+import hmac, hashlib, time, urllib.parse
+
+secret = b"your_webhook_secret_here"
+route = "/shopify-bridge/v1/stock/44611180265515/history"
+params = {"limit": "50"}
+query = urllib.parse.urlencode(sorted(params.items()), doseq=True, safe="", quote_via=urllib.parse.quote)
+ts = str(int(time.time()))
+canonical = "\n".join(["GET", route, query, ts])
+sig = hmac.new(secret, canonical.encode(), hashlib.sha256).hexdigest()
+
+print("Timestamp:", ts)
+print("Signature:", sig)
+print("Canonical:\n" + canonical)
+PY
+```
 
 ### General Tab Kill Switches
 
@@ -87,8 +151,7 @@ GET /stock/{inventory_item_id}
 - `inventory_item_id` (string, required) - The Shopify inventory item ID
 
 **Authentication:**
-- WordPress admin users (manage_woocommerce capability)
-- OR valid Shopify HMAC signature header
+- WordPress admin users (`manage_woocommerce`) OR signed GET headers (`X-SWB-Timestamp`, `X-SWB-Signature`)
 
 Unauthenticated requests receive `401` even when kill switches are enabled.
 
@@ -162,8 +225,7 @@ GET /stock/{inventory_item_id}/history
 - `limit` (integer, optional, default: 50) - Number of records to retrieve (1-200)
 
 **Authentication:**
-- WordPress admin users (manage_woocommerce capability)
-- OR valid Shopify HMAC signature header
+- WordPress admin users (`manage_woocommerce`) OR signed GET headers (`X-SWB-Timestamp`, `X-SWB-Signature`)
 
 **Response (Success):**
 ```json

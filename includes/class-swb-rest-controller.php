@@ -15,6 +15,34 @@ if ( ! defined( 'ABSPATH' ) ) {
 class SWB_REST_Controller extends WP_REST_Controller {
 
 	/**
+	 * Maximum allowed age/skew for signed requests in seconds.
+	 *
+	 * @var int
+	 */
+	const SIGNATURE_MAX_AGE_SECONDS = 600;
+
+	/**
+	 * Webhook replay cache TTL in seconds.
+	 *
+	 * @var int
+	 */
+	const WEBHOOK_REPLAY_TTL_SECONDS = 900;
+
+	/**
+	 * Generic rate limit window in seconds.
+	 *
+	 * @var int
+	 */
+	const RATE_LIMIT_WINDOW_SECONDS = 60;
+
+	/**
+	 * Maximum webhook requests per rate-limit window per source.
+	 *
+	 * @var int
+	 */
+	const WEBHOOK_RATE_LIMIT_MAX_REQUESTS = 120;
+
+	/**
 	 * Namespace for the REST API.
 	 *
 	 * @var string
@@ -106,6 +134,11 @@ class SWB_REST_Controller extends WP_REST_Controller {
 	 * @return true|WP_Error True if the request has read access, WP_Error object otherwise.
 	 */
 	public function verify_shopify_signature( $request ) {
+		$rate_limit = $this->enforce_rate_limit( $request, 'webhook', self::WEBHOOK_RATE_LIMIT_MAX_REQUESTS, self::RATE_LIMIT_WINDOW_SECONDS );
+		if ( is_wp_error( $rate_limit ) ) {
+			return $rate_limit;
+		}
+
 		// Always enforce signature verification at the permission layer.
 		// Disabled-state behavior is handled by the endpoint callbacks.
 		// 1. Retrieve the stored secret.
@@ -144,6 +177,16 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			);
 		}
 
+		$freshness = $this->verify_shopify_request_freshness( $request );
+		if ( is_wp_error( $freshness ) ) {
+			return $freshness;
+		}
+
+		$replay_guard = $this->verify_shopify_replay_protection( $request, $calculated_hmac );
+		if ( is_wp_error( $replay_guard ) ) {
+			return $replay_guard;
+		}
+
 		return true;
 	}
 
@@ -161,8 +204,191 @@ class SWB_REST_Controller extends WP_REST_Controller {
 			return true;
 		}
 
-		// Fall back to Shopify signature verification.
-		return $this->verify_shopify_signature( $request );
+		// External GET access requires a signed request bound to method/path/query and timestamp.
+		return $this->verify_signed_read_request( $request );
+	}
+
+	/**
+	 * Verify signed GET request for stock read endpoints.
+	 *
+	 * Required headers:
+	 * - X-SWB-Timestamp: unix timestamp
+	 * - X-SWB-Signature: hex HMAC-SHA256 over canonical payload
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return true|WP_Error
+	 */
+	private function verify_signed_read_request( $request ) {
+		$rate_limit = $this->enforce_rate_limit( $request, 'read', self::WEBHOOK_RATE_LIMIT_MAX_REQUESTS, self::RATE_LIMIT_WINDOW_SECONDS );
+		if ( is_wp_error( $rate_limit ) ) {
+			return $rate_limit;
+		}
+
+		$secret = get_option( 'swb_webhook_secret', '' );
+		if ( '' === trim( (string) $secret ) ) {
+			return new WP_Error( 'swb_missing_secret', __( 'Webhook secret is not configured.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		$timestamp_raw = $request->get_header( 'x_swb_timestamp' );
+		$signature     = strtolower( trim( (string) $request->get_header( 'x_swb_signature' ) ) );
+
+		if ( '' === $timestamp_raw || '' === $signature ) {
+			return new WP_Error( 'swb_missing_read_signature', __( 'Missing X-SWB-Timestamp or X-SWB-Signature header.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		if ( ! ctype_digit( (string) $timestamp_raw ) ) {
+			return new WP_Error( 'swb_invalid_read_timestamp', __( 'Invalid X-SWB-Timestamp header.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		$timestamp = intval( $timestamp_raw );
+		$now       = time();
+		if ( abs( $now - $timestamp ) > self::SIGNATURE_MAX_AGE_SECONDS ) {
+			return new WP_Error( 'swb_stale_read_signature', __( 'Signed request is expired or outside the allowed time window.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		$canonical = $this->build_signed_read_canonical_payload( $request, $timestamp );
+		$expected  = hash_hmac( 'sha256', $canonical, (string) $secret );
+
+		if ( ! hash_equals( $expected, $signature ) ) {
+			return new WP_Error( 'swb_invalid_read_signature', __( 'Invalid read request signature.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		$replay_key = 'swb_read_sig_' . md5( $signature . '|' . $timestamp );
+		if ( get_transient( $replay_key ) ) {
+			return new WP_Error( 'swb_read_replay_detected', __( 'Replay detected for signed read request.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		set_transient( $replay_key, 1, self::SIGNATURE_MAX_AGE_SECONDS );
+
+		return true;
+	}
+
+	/**
+	 * Build canonical payload for signed read requests.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @param int             $timestamp Timestamp.
+	 * @return string
+	 */
+	private function build_signed_read_canonical_payload( $request, $timestamp ) {
+		$method = strtoupper( (string) $request->get_method() );
+		$route  = '/' . ltrim( (string) $request->get_route(), '/' );
+
+		$query_params = (array) $request->get_query_params();
+		unset( $query_params['rest_route'] );
+		ksort( $query_params );
+		$query = http_build_query( $query_params, '', '&', PHP_QUERY_RFC3986 );
+
+		return implode(
+			"\n",
+			array(
+				$method,
+				$route,
+				$query,
+				(string) intval( $timestamp ),
+			)
+		);
+	}
+
+	/**
+	 * Verify Shopify request freshness by timestamp header.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return true|WP_Error
+	 */
+	private function verify_shopify_request_freshness( $request ) {
+		$triggered_at = trim( (string) $request->get_header( 'x_shopify_triggered_at' ) );
+		if ( '' === $triggered_at ) {
+			return new WP_Error( 'swb_missing_triggered_at', __( 'Missing X-Shopify-Triggered-At header.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		$timestamp = strtotime( $triggered_at );
+		if ( false === $timestamp ) {
+			return new WP_Error( 'swb_invalid_triggered_at', __( 'Invalid X-Shopify-Triggered-At header.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		if ( abs( time() - intval( $timestamp ) ) > self::SIGNATURE_MAX_AGE_SECONDS ) {
+			return new WP_Error( 'swb_stale_webhook', __( 'Webhook request is outside the allowed freshness window.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		return true;
+	}
+
+	/**
+	 * Verify webhook replay protection using Shopify webhook ID.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @param string          $calculated_hmac Calculated HMAC.
+	 * @return true|WP_Error
+	 */
+	private function verify_shopify_replay_protection( $request, $calculated_hmac ) {
+		$webhook_id = trim( (string) $request->get_header( 'x_shopify_webhook_id' ) );
+		if ( '' === $webhook_id ) {
+			return new WP_Error( 'swb_missing_webhook_id', __( 'Missing X-Shopify-Webhook-Id header.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		$replay_key = 'swb_webhook_seen_' . md5( $webhook_id . '|' . $calculated_hmac );
+		if ( get_transient( $replay_key ) ) {
+			return new WP_Error( 'swb_webhook_replay', __( 'Replay detected for Shopify webhook request.', 'shopify-woo-bridge' ), array( 'status' => 401 ) );
+		}
+
+		set_transient( $replay_key, 1, self::WEBHOOK_REPLAY_TTL_SECONDS );
+
+		return true;
+	}
+
+	/**
+	 * Apply per-source endpoint rate limiting.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @param string          $scope Scope key.
+	 * @param int             $max_requests Max requests in window.
+	 * @param int             $window_seconds Window in seconds.
+	 * @return true|WP_Error
+	 */
+	private function enforce_rate_limit( $request, $scope, $max_requests, $window_seconds ) {
+		$ip = $this->get_request_ip( $request );
+		if ( '' === $ip ) {
+			$ip = 'unknown';
+		}
+
+		$key     = 'swb_rl_' . md5( $scope . '|' . $ip );
+		$current = intval( get_transient( $key ) );
+
+		if ( $current >= intval( $max_requests ) ) {
+			return new WP_Error( 'swb_rate_limited', __( 'Rate limit exceeded. Please retry later.', 'shopify-woo-bridge' ), array( 'status' => 429 ) );
+		}
+
+		set_transient( $key, $current + 1, max( 1, intval( $window_seconds ) ) );
+
+		return true;
+	}
+
+	/**
+	 * Resolve caller IP address from request headers.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return string
+	 */
+	private function get_request_ip( $request ) {
+		$forwarded_for = trim( (string) $request->get_header( 'x_forwarded_for' ) );
+		if ( '' !== $forwarded_for ) {
+			$parts = array_map( 'trim', explode( ',', $forwarded_for ) );
+			if ( ! empty( $parts[0] ) ) {
+				return sanitize_text_field( $parts[0] );
+			}
+		}
+
+		$real_ip = trim( (string) $request->get_header( 'x_real_ip' ) );
+		if ( '' !== $real_ip ) {
+			return sanitize_text_field( $real_ip );
+		}
+
+		if ( isset( $_SERVER['REMOTE_ADDR'] ) ) {
+			return sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) );
+		}
+
+		return '';
 	}
 
 	/**
