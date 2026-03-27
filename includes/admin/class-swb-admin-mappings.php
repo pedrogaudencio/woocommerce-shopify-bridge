@@ -158,6 +158,7 @@ class SWB_Admin_Mappings {
 			array(
 				'message' => __( 'Working... please wait.', 'shopify-woo-bridge' ),
 				'bulkImageSyncContinuationMessage' => __( 'Syncing images... batch in progress. Please keep this page open until completion.', 'shopify-woo-bridge' ),
+				'bulkStockSyncContinuationMessage' => __( 'Syncing stock... batch in progress. Please keep this page open until completion.', 'shopify-woo-bridge' ),
 				/* translators: %action% is the bulk action label and %count% is the number of selected mappings. */
 				'bulkActionMessageSingular' => __( 'Running bulk action "%action%" for %count% selected mapping. This can take a while, so please keep this page open until it finishes.', 'shopify-woo-bridge' ),
 				/* translators: %action% is the bulk action label and %count% is the number of selected mappings. */

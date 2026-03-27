@@ -4,7 +4,8 @@
 	var overlayVisible = false;
 	var hideTimer = null;
 	var localized = window.swbLoadingOverlay || {};
-	var bulkImageSyncStorageKey = 'swbBulkImageSyncInProgress';
+	var bulkActionStorageKey = 'swbBulkActionInProgress';
+	var bulkActionMaxAgeMs = 30 * 60 * 1000;
 
 	function getLocalizedString(key, fallback) {
 		if (localized && typeof localized[key] === 'string' && localized[key].length > 0) {
@@ -60,6 +61,14 @@
 		return '1' === getQueryParam('swb_bulk_sync_images_continue') || '1' === getQueryParam('swb_bulk_sync_images_selected_continue');
 	}
 
+	function isBulkStockSyncContinuation() {
+		return '1' === getQueryParam('swb_bulk_sync_stock_continue');
+	}
+
+	function isBulkActionContinuation() {
+		return isBulkImageSyncContinuation() || isBulkStockSyncContinuation();
+	}
+
 	function isBulkImageSyncCompleteNotice() {
 		if ('1' !== getQueryParam('swb_notice')) {
 			return false;
@@ -69,42 +78,77 @@
 		return message.indexOf('Bulk image sync complete') !== -1;
 	}
 
-	function getBulkImageSyncState() {
-		try {
-			return window.sessionStorage.getItem(bulkImageSyncStorageKey) === '1';
-		} catch (e) {
+	function isBulkStockSyncCompleteNotice() {
+		if ('1' !== getQueryParam('swb_notice')) {
 			return false;
+		}
+
+		var message = getQueryParam('swb_message');
+		return message.indexOf('Bulk stock sync complete') !== -1;
+	}
+
+	function getBulkActionState() {
+		try {
+			var raw = window.sessionStorage.getItem(bulkActionStorageKey);
+			if (!raw) {
+				return null;
+			}
+
+			var parsed = JSON.parse(raw);
+			if (!parsed || (parsed.type !== 'images' && parsed.type !== 'stock')) {
+				window.sessionStorage.removeItem(bulkActionStorageKey);
+				return null;
+			}
+
+			var startedAt = Number(parsed.startedAt || 0);
+			if (!startedAt || Date.now() - startedAt > bulkActionMaxAgeMs) {
+				window.sessionStorage.removeItem(bulkActionStorageKey);
+				return null;
+			}
+
+			return parsed;
+		} catch (e) {
+			return null;
 		}
 	}
 
-	function setBulkImageSyncState(active) {
+	function setBulkActionState(type) {
 		try {
-			if (active) {
-				window.sessionStorage.setItem(bulkImageSyncStorageKey, '1');
+			if (type === 'images' || type === 'stock') {
+				window.sessionStorage.setItem(
+					bulkActionStorageKey,
+					JSON.stringify({
+						type: type,
+						startedAt: Date.now()
+					})
+				);
 				return;
 			}
 
-			window.sessionStorage.removeItem(bulkImageSyncStorageKey);
+			window.sessionStorage.removeItem(bulkActionStorageKey);
 		} catch (e) {
 			// Ignore storage access failures.
 		}
 	}
 
-	function isBulkImageSyncSubmit(form, bulkActionContext) {
-		if (!(form instanceof HTMLFormElement)) {
-			return false;
-		}
-
-		var topSyncInput = form.querySelector('input[name="swb_bulk_sync_images"]');
-		if (topSyncInput && topSyncInput.value === '1') {
-			return true;
-		}
-
-		return !!(bulkActionContext && bulkActionContext.value === 'bulk-sync-images');
+	function isBulkActionInProgress() {
+		return !!getBulkActionState();
 	}
 
 	function getBulkImageSyncContinuationMessage() {
 		return getLocalizedString('bulkImageSyncContinuationMessage', 'Syncing images... batch in progress. Please keep this page open until completion.');
+	}
+
+	function getBulkStockSyncContinuationMessage() {
+		return getLocalizedString('bulkStockSyncContinuationMessage', 'Syncing stock... batch in progress. Please keep this page open until completion.');
+	}
+
+	function getBulkActionContinuationMessage(actionType) {
+		if ('stock' === actionType) {
+			return getBulkStockSyncContinuationMessage();
+		}
+
+		return getBulkImageSyncContinuationMessage();
 	}
 
 	function showOverlay(customMessage) {
@@ -124,10 +168,24 @@
 			window.clearTimeout(hideTimer);
 		}
 
-		// Fallback for file-download flows where page may stay open.
+		// Fallback only for non-persistent actions.
 		hideTimer = window.setTimeout(function () {
 			hideOverlay();
 		}, 45000);
+	}
+
+	function showPersistentOverlayForBulkAction(actionType) {
+		showOverlay(getBulkActionContinuationMessage(actionType));
+
+		// Keep overlay visible for long-running server-side processing.
+		if (hideTimer) {
+			window.clearTimeout(hideTimer);
+		}
+
+		hideTimer = window.setTimeout(function () {
+			setBulkActionState(null);
+			hideOverlay();
+		}, bulkActionMaxAgeMs);
 	}
 
 	function getBulkActionContext(form) {
@@ -167,7 +225,7 @@
 	}
 
 	function hideOverlay() {
-		if (getBulkImageSyncState() && isBulkImageSyncContinuation()) {
+		if (isBulkActionInProgress()) {
 			return;
 		}
 
@@ -177,6 +235,32 @@
 		}
 		document.body.classList.remove('swb-loading-active');
 		overlayVisible = false;
+	}
+
+	function detectBulkActionFromSubmit(form, bulkActionContext) {
+		if (!(form instanceof HTMLFormElement)) {
+			return '';
+		}
+
+		var imageSyncInput = form.querySelector('input[name="swb_bulk_sync_images"]');
+		if (imageSyncInput && imageSyncInput.value === '1') {
+			return 'images';
+		}
+
+		var stockSyncInput = form.querySelector('input[name="swb_bulk_sync_stock"]');
+		if (stockSyncInput && stockSyncInput.value === '1') {
+			return 'stock';
+		}
+
+		if (bulkActionContext && bulkActionContext.value === 'bulk-sync-images') {
+			return 'images';
+		}
+
+		if (bulkActionContext && bulkActionContext.value === 'bulk-sync-stock') {
+			return 'stock';
+		}
+
+		return '';
 	}
 
 	function markBusy(trigger, event, message) {
@@ -215,9 +299,10 @@
 		}
 
 		var bulkActionContext = getBulkActionContext(form);
-		if (isBulkImageSyncSubmit(form, bulkActionContext)) {
-			setBulkImageSyncState(true);
-			showOverlay(getBulkImageSyncContinuationMessage());
+		var bulkActionType = detectBulkActionFromSubmit(form, bulkActionContext);
+		if (bulkActionType) {
+			setBulkActionState(bulkActionType);
+			showPersistentOverlayForBulkAction(bulkActionType);
 			return;
 		}
 
@@ -231,18 +316,19 @@
 		}
 	});
 
-	if (isBulkImageSyncContinuation() || getBulkImageSyncState()) {
-		showOverlay(getBulkImageSyncContinuationMessage());
+	var activeBulkAction = getBulkActionState();
+	if (isBulkActionContinuation() || activeBulkAction) {
+		showPersistentOverlayForBulkAction(activeBulkAction ? activeBulkAction.type : 'images');
 	}
 
-	if (isBulkImageSyncCompleteNotice()) {
-		setBulkImageSyncState(false);
+	if (isBulkImageSyncCompleteNotice() || isBulkStockSyncCompleteNotice()) {
+		setBulkActionState(null);
 		hideOverlay();
 	}
 
 	window.addEventListener('pageshow', hideOverlay);
 	window.addEventListener('focus', function () {
-		if (getBulkImageSyncState() && isBulkImageSyncContinuation()) {
+		if (isBulkActionInProgress()) {
 			return;
 		}
 
