@@ -14,12 +14,21 @@
 
 .swb-loading-overlay-inner {
 	display: inline-flex;
-	align-items: center;
+	flex-direction: column;
+	align-items: stretch;
 	gap: 10px;
+	min-width: 380px;
+	max-width: 560px;
 	padding: 14px 18px;
 	border-radius: 8px;
 	background: #fff;
 	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+}
+
+.swb-loading-header {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
 }
 
 .swb-loading-spinner {
@@ -36,6 +45,42 @@
 	color: #1d2327;
 }
 
+.swb-loading-progress-wrap {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.swb-loading-progress-track {
+	width: 100%;
+	height: 8px;
+	border-radius: 999px;
+	background: #e5e5e5;
+	overflow: hidden;
+}
+
+.swb-loading-progress-fill {
+	width: 0;
+	height: 100%;
+	background: #2271b1;
+	transition: width 0.25s ease;
+}
+
+.swb-loading-progress-wrap.is-indeterminate .swb-loading-progress-fill {
+	animation: swb-progress-indeterminate 1.2s ease-in-out infinite;
+	transition: none;
+}
+
+.swb-loading-progress-text,
+.swb-loading-current-status,
+.swb-loading-current-item {
+	font-size: 12px;
+	color: #50575e;
+	line-height: 1.4;
+	word-break: break-word;
+	white-space: pre-line;
+}
+
 body.swb-loading-active {
 	cursor: progress;
 }
@@ -48,6 +93,18 @@ body.swb-loading-active .swb-long-action-link {
 @keyframes swb-spin {
 	to {
 		transform: rotate(360deg);
+	}
+}
+
+@keyframes swb-progress-indeterminate {
+	0% {
+		transform: translateX(-120%);
+	}
+	50% {
+		transform: translateX(20%);
+	}
+	100% {
+		transform: translateX(260%);
 	}
 }
 

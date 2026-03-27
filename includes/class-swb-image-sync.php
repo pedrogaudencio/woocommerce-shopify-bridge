@@ -50,6 +50,13 @@ class SWB_Image_Sync {
 	const LAST_MEDIA_SIGNATURE_META = 'shopify_sync_last_media_signature';
 
 	/**
+	 * Last attachment import action marker: downloaded|reused.
+	 *
+	 * @var string
+	 */
+	private $last_attachment_import_action = '';
+
+	/**
 	 * Sync images for one mapping row (single product or single variation).
 	 *
 	 * NOTE: This method syncs a SINGLE mapping row only, not a group of rows.
@@ -137,8 +144,9 @@ class SWB_Image_Sync {
 			);
 		}
 
-		$changed       = false;
-		$error_message = '';
+		$changed        = false;
+		$error_message  = '';
+		$status_message = '';
 
 		if ( $is_variation ) {
 			// Variation mappings are isolated: sync only this variation image.
@@ -147,6 +155,7 @@ class SWB_Image_Sync {
 				$error_message = $variation_result['message'];
 			}
 			$changed = $variation_result['changed'];
+			$status_message = isset( $variation_result['message'] ) ? (string) $variation_result['message'] : '';
 		} else {
 			$parent_id = $wc_product->get_id();
 			if ( $parent_id <= 0 ) {
@@ -163,6 +172,7 @@ class SWB_Image_Sync {
 				$error_message = $parent_result['message'];
 			}
 			$changed = $parent_result['changed'];
+			$status_message = isset( $parent_result['message'] ) ? (string) $parent_result['message'] : '';
 		}
 
 		if ( ! empty( $error_message ) ) {
@@ -177,14 +187,14 @@ class SWB_Image_Sync {
 			return array(
 				'success' => true,
 				'changed' => false,
-				'message' => __( 'Images already in sync (no media changes detected).', 'shopify-woo-bridge' ),
+				'message' => '' !== $status_message ? $status_message : __( 'Images already in sync (no media changes detected).', 'shopify-woo-bridge' ),
 			);
 		}
 
 		return array(
 			'success' => true,
 			'changed' => true,
-			'message' => __( 'Images synced successfully.', 'shopify-woo-bridge' ),
+			'message' => '' !== $status_message ? $status_message : __( 'Images synced successfully.', 'shopify-woo-bridge' ),
 		);
 	}
 
@@ -248,6 +258,9 @@ class SWB_Image_Sync {
 	 * @return array
 	 */
 	private function sync_parent_gallery( $parent_id, $shopify_product_id, $image_map ) {
+		$downloaded_count = 0;
+		$reused_count     = 0;
+
 		$hash_payload = array(
 			'shopify_product_id' => (string) $shopify_product_id,
 			'featured'           => array(
@@ -281,7 +294,7 @@ class SWB_Image_Sync {
 			return array(
 				'success' => true,
 				'changed' => false,
-				'message' => '',
+				'message' => __( 'Image sync unchanged: parent media hash and signature already match.', 'shopify-woo-bridge' ),
 			);
 			}
 
@@ -303,6 +316,8 @@ class SWB_Image_Sync {
 					'message' => sprintf( __( 'Parent featured image sync failed: %s', 'shopify-woo-bridge' ), $featured_attachment_id->get_error_message() ),
 				);
 			}
+
+			$this->track_attachment_import_counters( $downloaded_count, $reused_count );
 		}
 
 		$gallery_attachment_ids = array();
@@ -321,6 +336,7 @@ class SWB_Image_Sync {
 			}
 
 			$gallery_attachment_ids[] = absint( $attachment_id );
+			$this->track_attachment_import_counters( $downloaded_count, $reused_count );
 		}
 
 		$gallery_attachment_ids = array_values( array_unique( array_filter( $gallery_attachment_ids ) ) );
@@ -351,7 +367,13 @@ class SWB_Image_Sync {
 		return array(
 			'success' => true,
 			'changed' => true,
-			'message' => '',
+			'message' => sprintf(
+				/* translators: 1: downloaded attachment count, 2: reused attachment count, 3: gallery image count applied (excluding featured). */
+				__( 'Image sync updated parent media. Downloaded: %1$d, Reused: %2$d, Gallery applied: %3$d.', 'shopify-woo-bridge' ),
+				$downloaded_count,
+				$reused_count,
+				count( $gallery_without_featured )
+			),
 		);
 	}
 
@@ -367,6 +389,9 @@ class SWB_Image_Sync {
 	 * @return array
 	 */
 	private function sync_single_variation( $variation_id, $shopify_product_id, $shopify_variant_id, $shopify_product, $image_map, $mapping ) {
+		$downloaded_count = 0;
+		$reused_count     = 0;
+
 		$variants      = isset( $shopify_product['variants'] ) && is_array( $shopify_product['variants'] ) ? $shopify_product['variants'] : array();
 		$variant_by_id = array();
 
@@ -466,7 +491,7 @@ class SWB_Image_Sync {
 			return array(
 				'success' => true,
 				'changed' => (bool) $parent_updated,
-				'message' => '',
+				'message' => __( 'Image sync unchanged: variation media hash and signature already match.', 'shopify-woo-bridge' ),
 			);
 			}
 
@@ -489,6 +514,8 @@ class SWB_Image_Sync {
 					'message' => sprintf( __( 'Variation image sync failed: %s', 'shopify-woo-bridge' ), $attachment_id->get_error_message() ),
 				);
 			}
+
+			$this->track_attachment_import_counters( $downloaded_count, $reused_count );
 		}
 
 		$variation_gallery_attachment_ids = array();
@@ -503,6 +530,7 @@ class SWB_Image_Sync {
 			}
 
 			$variation_gallery_attachment_ids[] = absint( $gallery_attachment_id );
+			$this->track_attachment_import_counters( $downloaded_count, $reused_count );
 		}
 
 		$variation_gallery_attachment_ids = array_values( array_unique( array_filter( $variation_gallery_attachment_ids ) ) );
@@ -535,7 +563,13 @@ class SWB_Image_Sync {
 		return array(
 			'success' => true,
 			'changed' => true,
-			'message' => '',
+			'message' => sprintf(
+				/* translators: 1: downloaded attachment count, 2: reused attachment count, 3: variation gallery count applied. */
+				__( 'Image sync updated variation media. Downloaded: %1$d, Reused: %2$d, Variation gallery applied: %3$d.', 'shopify-woo-bridge' ),
+				$downloaded_count,
+				$reused_count,
+				count( $variation_gallery_attachment_ids )
+			),
 		);
 	}
 
@@ -655,6 +689,27 @@ class SWB_Image_Sync {
 		);
 
 		return true;
+	}
+
+	/**
+	 * Track counters for the last attachment import action.
+	 *
+	 * @param int $downloaded_count Downloaded counter.
+	 * @param int $reused_count Reused counter.
+	 * @return void
+	 */
+	private function track_attachment_import_counters( &$downloaded_count, &$reused_count ) {
+		$action = $this->last_attachment_import_action;
+		$this->last_attachment_import_action = '';
+
+		if ( 'downloaded' === $action ) {
+			$downloaded_count++;
+			return;
+		}
+
+		if ( 'reused' === $action ) {
+			$reused_count++;
+		}
 	}
 
 	/**
@@ -881,6 +936,8 @@ class SWB_Image_Sync {
 	 * @return int|WP_Error
 	 */
 	private function import_or_get_attachment_id( $url, $parent_post_id ) {
+		$this->last_attachment_import_action = '';
+
 		$url = esc_url_raw( trim( (string) $url ) );
 		if ( '' === $url ) {
 			return new WP_Error( 'swb_empty_image_url', __( 'Image URL is empty.', 'shopify-woo-bridge' ) );
@@ -910,6 +967,7 @@ class SWB_Image_Sync {
 					'source_url'    => $url,
 				)
 			);
+			$this->last_attachment_import_action = 'reused';
 			return $existing;
 		}
 
@@ -927,11 +985,13 @@ class SWB_Image_Sync {
 
 		$attachment_id = media_sideload_image( $url, $parent_post_id, null, 'id' );
 		if ( is_wp_error( $attachment_id ) ) {
+			$this->last_attachment_import_action = '';
 			return $attachment_id;
 		}
 
 		$attachment_id = absint( $attachment_id );
 		if ( $attachment_id <= 0 ) {
+			$this->last_attachment_import_action = '';
 			return new WP_Error( 'swb_attachment_import_failed', __( 'Unable to import image attachment.', 'shopify-woo-bridge' ) );
 		}
 
@@ -948,6 +1008,7 @@ class SWB_Image_Sync {
 				'source_url'    => $url,
 			)
 		);
+		$this->last_attachment_import_action = 'downloaded';
 
 		return $attachment_id;
 	}

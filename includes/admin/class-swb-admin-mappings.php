@@ -29,6 +29,20 @@ class SWB_Admin_Mappings {
 	const BULK_IMAGE_SYNC_BATCH_SIZE = 8;
 
 	/**
+	 * Option key prefix for AJAX selected-row bulk image sync jobs.
+	 *
+	 * @var string
+	 */
+	const SELECTED_BULK_IMAGE_SYNC_AJAX_JOB_OPTION_PREFIX = 'swb_selected_bulk_image_sync_ajax_job_';
+
+	/**
+	 * Batch size for AJAX selected-row bulk image sync processing.
+	 *
+	 * @var int
+	 */
+	const SELECTED_BULK_IMAGE_SYNC_AJAX_BATCH_SIZE = 12;
+
+	/**
 	 * Settings page adapter.
 	 *
 	 * @var SWB_Admin_Settings|null
@@ -50,6 +64,10 @@ class SWB_Admin_Mappings {
 		add_action( 'admin_init', array( $this, 'handle_bulk_sync_images' ) );
 		add_action( 'admin_init', array( $this, 'handle_settings_save' ) );
 		add_action( 'admin_init', array( $this, 'maybe_redirect_legacy_settings_url' ) );
+		add_action( 'wp_ajax_swb_start_bulk_image_sync_ajax', array( $this, 'ajax_start_bulk_image_sync' ) );
+		add_action( 'wp_ajax_swb_tick_bulk_image_sync_ajax', array( $this, 'ajax_tick_bulk_image_sync' ) );
+		add_action( 'wp_ajax_swb_start_selected_bulk_image_sync_ajax', array( $this, 'ajax_start_selected_bulk_image_sync' ) );
+		add_action( 'wp_ajax_swb_tick_selected_bulk_image_sync_ajax', array( $this, 'ajax_tick_selected_bulk_image_sync' ) );
 	}
 
 	/**
@@ -159,6 +177,19 @@ class SWB_Admin_Mappings {
 				'message' => __( 'Working... please wait.', 'shopify-woo-bridge' ),
 				'bulkImageSyncContinuationMessage' => __( 'Syncing images... batch in progress. Please keep this page open until completion.', 'shopify-woo-bridge' ),
 				'bulkStockSyncContinuationMessage' => __( 'Syncing stock... batch in progress. Please keep this page open until completion.', 'shopify-woo-bridge' ),
+				'progressTemplate' => __( 'Progress: %processed%/%total% (%percent%%)', 'shopify-woo-bridge' ),
+				'processedOnlyTemplate' => __( 'Processed: %processed%', 'shopify-woo-bridge' ),
+				'indeterminateProgressText' => __( 'Processing...', 'shopify-woo-bridge' ),
+				'currentStatusTemplate' => __( 'Status: %status%', 'shopify-woo-bridge' ),
+				'imageStatusSummaryTemplate' => __( 'Image sync status - Changed: %changed%, Unchanged: %unchanged%, Failed: %failed%', 'shopify-woo-bridge' ),
+				'currentItemTemplate' => __( 'Currently processing - SKU: %sku% | Inventory ID: %inventory%', 'shopify-woo-bridge' ),
+				'missingValue' => __( 'N/A', 'shopify-woo-bridge' ),
+				'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+				'bulkImageSyncAjaxNonce' => wp_create_nonce( 'swb_bulk_image_sync_ajax' ),
+				'bulkImageSyncStartAction' => 'swb_start_bulk_image_sync_ajax',
+				'bulkImageSyncTickAction' => 'swb_tick_bulk_image_sync_ajax',
+				'selectedBulkImageSyncStartAction' => 'swb_start_selected_bulk_image_sync_ajax',
+				'selectedBulkImageSyncTickAction' => 'swb_tick_selected_bulk_image_sync_ajax',
 				/* translators: %action% is the bulk action label and %count% is the number of selected mappings. */
 				'bulkActionMessageSingular' => __( 'Running bulk action "%action%" for %count% selected mapping. This can take a while, so please keep this page open until it finishes.', 'shopify-woo-bridge' ),
 				/* translators: %action% is the bulk action label and %count% is the number of selected mappings. */
@@ -788,6 +819,17 @@ class SWB_Admin_Mappings {
 	 * @return void
 	 */
 	private function start_bulk_image_sync_job( $product_type ) {
+		$job = $this->create_bulk_image_sync_job( $product_type );
+		$this->redirect_bulk_image_sync_job( $job['job_token'], $job['state']['product_type'], $job['state'] );
+	}
+
+	/**
+	 * Create and persist bulk image sync job state.
+	 *
+	 * @param string $product_type Product type filter.
+	 * @return array
+	 */
+	private function create_bulk_image_sync_job( $product_type ) {
 		$job_token  = wp_generate_password( 20, false, false );
 		$option_key = $this->get_bulk_image_sync_job_option_key( $job_token );
 
@@ -796,16 +838,521 @@ class SWB_Admin_Mappings {
 			'cursor_shopify_product_id' => '',
 			'cursor_mapping_id'         => 0,
 			'processed'                 => 0,
+			'total'                     => $this->get_bulk_image_sync_total( $product_type ),
 			'changed'                   => 0,
 			'unchanged'                 => 0,
 			'failed'                    => 0,
 			'skipped'                   => 0,
+			'current_wc_sku'            => '',
+			'current_shopify_item_id'   => '',
+			'current_status_message'    => '',
 			'failed_items'              => array(),
 		);
 
 		update_option( $option_key, $state, false );
 
-		$this->redirect_bulk_image_sync_job( $job_token, $state['product_type'] );
+		return array(
+			'job_token' => $job_token,
+			'state'     => $state,
+		);
+	}
+
+	/**
+	 * AJAX: Start bulk image sync job and return initial progress payload.
+	 *
+	 * @return void
+	 */
+	public function ajax_start_bulk_image_sync() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Unauthorized.', 'shopify-woo-bridge' ) ), 403 );
+		}
+
+		check_ajax_referer( 'swb_bulk_image_sync_ajax', 'nonce' );
+
+		$product_type = $this->normalize_product_type_filter(
+			isset( $_POST['swb_product_type'] ) ? sanitize_key( wp_unslash( $_POST['swb_product_type'] ) ) : 'all'
+		);
+
+		$job = $this->create_bulk_image_sync_job( $product_type );
+
+		wp_send_json_success(
+			array(
+				'jobToken'  => $job['job_token'],
+				'done'      => false,
+				'progress'  => $this->build_bulk_image_sync_progress_payload( $job['state'] ),
+			)
+		);
+	}
+
+	/**
+	 * AJAX: Process one bulk image sync batch and return progress or final redirect URL.
+	 *
+	 * @return void
+	 */
+	public function ajax_tick_bulk_image_sync() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Unauthorized.', 'shopify-woo-bridge' ) ), 403 );
+		}
+
+		check_ajax_referer( 'swb_bulk_image_sync_ajax', 'nonce' );
+
+		$job_token = isset( $_POST['job_token'] ) ? preg_replace( '/[^a-zA-Z0-9]/', '', (string) wp_unslash( $_POST['job_token'] ) ) : '';
+		if ( '' === $job_token ) {
+			wp_send_json_error( array( 'message' => __( 'Bulk image sync session is invalid.', 'shopify-woo-bridge' ) ), 400 );
+		}
+
+		$result = $this->process_bulk_image_sync_job_ajax( $job_token );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ), 400 );
+		}
+
+		wp_send_json_success( $result );
+
+	}
+
+	/**
+	 * Process one batch of a bulk image sync job for AJAX loop.
+	 *
+	 * @param string $job_token Job token.
+	 * @return array|WP_Error
+	 */
+	private function process_bulk_image_sync_job_ajax( $job_token ) {
+		$option_key = $this->get_bulk_image_sync_job_option_key( $job_token );
+		$state      = get_option( $option_key, null );
+
+		if ( ! is_array( $state ) ) {
+			return new WP_Error( 'swb_bulk_sync_expired', __( 'Bulk image sync session expired. Please run sync images again.', 'shopify-woo-bridge' ) );
+		}
+
+		$product_type           = isset( $state['product_type'] ) ? $this->normalize_product_type_filter( $state['product_type'] ) : 'all';
+		$batch_size             = $this->get_bulk_image_sync_ajax_batch_size();
+		$scan_limit             = max( 50, $batch_size * 8 );
+		$max_rows_scanned       = max( 300, $batch_size * 50 );
+		$processed_this_request = 0;
+		$rows_scanned           = 0;
+		$has_more_rows          = false;
+		$failed_items           = isset( $state['failed_items'] ) && is_array( $state['failed_items'] ) ? $state['failed_items'] : array();
+
+		$sync_service = new SWB_Image_Sync();
+
+		do {
+			$rows = $this->get_next_bulk_image_sync_rows(
+				isset( $state['cursor_shopify_product_id'] ) ? (string) $state['cursor_shopify_product_id'] : '',
+				isset( $state['cursor_mapping_id'] ) ? absint( $state['cursor_mapping_id'] ) : 0,
+				$scan_limit
+			);
+
+			if ( empty( $rows ) ) {
+				$has_more_rows = false;
+				break;
+			}
+
+			$has_more_rows = count( $rows ) === $scan_limit;
+
+			foreach ( $rows as $row ) {
+				$rows_scanned++;
+				$state['cursor_shopify_product_id'] = isset( $row->shopify_product_id ) ? trim( (string) $row->shopify_product_id ) : '';
+				$state['cursor_mapping_id']         = isset( $row->id ) ? absint( $row->id ) : 0;
+
+				$shopify_product_id = $state['cursor_shopify_product_id'];
+				$wc_sku             = isset( $row->wc_sku ) ? trim( (string) $row->wc_sku ) : '';
+				$mapping_id         = isset( $row->id ) ? absint( $row->id ) : 0;
+				$state['current_wc_sku']            = $wc_sku;
+				$state['current_shopify_item_id']   = isset( $row->shopify_item_id ) ? trim( (string) $row->shopify_item_id ) : '';
+
+				if ( '' === $shopify_product_id ) {
+					$this->set_mapping_media_sync_status( $mapping_id, 'error', __( 'Missing Shopify Product ID.', 'shopify-woo-bridge' ) );
+					$state['skipped']                = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+					$state['current_status_message'] = __( 'Skipped: Missing Shopify Product ID.', 'shopify-woo-bridge' );
+					continue;
+				}
+
+				if ( 'all' !== $product_type && ! $this->is_wc_sku_matching_product_type( $wc_sku, $product_type ) ) {
+					continue;
+				}
+
+				$state['processed'] = isset( $state['processed'] ) ? intval( $state['processed'] ) + 1 : 1;
+				$processed_this_request++;
+
+				$result = $sync_service->sync_images_for_mapping( $row );
+
+				if ( ! empty( $result['success'] ) ) {
+					if ( ! empty( $result['changed'] ) ) {
+						$state['changed']                = isset( $state['changed'] ) ? intval( $state['changed'] ) + 1 : 1;
+						$status                          = 'changed';
+						$state['current_status_message'] = ! empty( $result['message'] ) ? (string) $result['message'] : __( 'Image sync changed media.', 'shopify-woo-bridge' );
+					} else {
+						$state['unchanged']              = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) + 1 : 1;
+						$status                          = 'unchanged';
+						$state['current_status_message'] = ! empty( $result['message'] ) ? (string) $result['message'] : __( 'Image sync unchanged.', 'shopify-woo-bridge' );
+					}
+
+					$this->set_mapping_media_sync_status( $mapping_id, $status, '' );
+				} else {
+					$state['failed']                 = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
+					$error_message                   = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
+					$state['current_status_message'] = $error_message;
+					$this->set_mapping_media_sync_status( $mapping_id, 'error', $error_message );
+					$this->add_failed_image_sync_detail(
+						$failed_items,
+						isset( $row->shopify_item_id ) ? (string) $row->shopify_item_id : '',
+						$wc_sku,
+						$error_message
+					);
+				}
+
+				if ( $processed_this_request >= $batch_size || $rows_scanned >= $max_rows_scanned ) {
+					break 2;
+				}
+			}
+		} while ( $processed_this_request < $batch_size && $rows_scanned < $max_rows_scanned && $has_more_rows );
+
+		$state['failed_items'] = $failed_items;
+
+		if ( $processed_this_request >= $batch_size || $rows_scanned >= $max_rows_scanned || $has_more_rows ) {
+			update_option( $option_key, $state, false );
+
+			return array(
+				'done'     => false,
+				'progress' => $this->build_bulk_image_sync_progress_payload( $state ),
+			);
+		}
+
+		delete_option( $option_key );
+
+		$failed      = intval( isset( $state['failed'] ) ? $state['failed'] : 0 );
+		$notice_type = $failed > 0 ? 'error' : 'success';
+		$message     = sprintf(
+			/* translators: 1: processed mappings, 2: changed mappings, 3: unchanged mappings, 4: failed mappings, 5: skipped mappings. */
+			__( 'Bulk image sync complete. Processed: %1$d, Changed: %2$d, Unchanged: %3$d, Failed: %4$d, Skipped: %5$d.', 'shopify-woo-bridge' ),
+			intval( isset( $state['processed'] ) ? $state['processed'] : 0 ),
+			intval( isset( $state['changed'] ) ? $state['changed'] : 0 ),
+			intval( isset( $state['unchanged'] ) ? $state['unchanged'] : 0 ),
+			$failed,
+			intval( isset( $state['skipped'] ) ? $state['skipped'] : 0 )
+		);
+		$message .= $this->build_failed_image_sync_details_message( $failed_items, $failed );
+
+		return array(
+			'done'        => true,
+			'redirectUrl' => $this->get_bulk_action_notice_url( $notice_type, $message, $product_type ),
+			'progress'    => $this->build_bulk_image_sync_progress_payload( $state ),
+		);
+	}
+
+	/**
+	 * Build normalized progress payload consumed by the loading overlay.
+	 *
+	 * @param array $state Job state.
+	 * @return array
+	 */
+	private function build_bulk_image_sync_progress_payload( $state ) {
+		$changed   = isset( $state['changed'] ) ? absint( $state['changed'] ) : 0;
+		$unchanged = isset( $state['unchanged'] ) ? absint( $state['unchanged'] ) : 0;
+		$failed    = isset( $state['failed'] ) ? absint( $state['failed'] ) : 0;
+		$processed = $changed + $unchanged + $failed;
+
+		$skipped = isset( $state['skipped'] ) ? absint( $state['skipped'] ) : 0;
+		$total   = isset( $state['total'] ) ? absint( $state['total'] ) : 0;
+
+		return array(
+			'action'           => 'images',
+			'processed'        => $processed,
+			'handled'          => $processed + $skipped,
+			'total'            => $total,
+			'changed'          => $changed,
+			'unchanged'        => $unchanged,
+			'failed'           => $failed,
+			'statusMessage'    => isset( $state['current_status_message'] ) ? (string) $state['current_status_message'] : '',
+			'wcSku'            => isset( $state['current_wc_sku'] ) ? (string) $state['current_wc_sku'] : '',
+			'shopifyItemId'    => isset( $state['current_shopify_item_id'] ) ? (string) $state['current_shopify_item_id'] : '',
+		);
+	}
+
+	/**
+	 * AJAX: Start selected-row bulk image sync job.
+	 *
+	 * @return void
+	 */
+	public function ajax_start_selected_bulk_image_sync() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Unauthorized.', 'shopify-woo-bridge' ) ), 403 );
+		}
+
+		check_ajax_referer( 'swb_bulk_image_sync_ajax', 'nonce' );
+
+		$mapping_ids_raw = isset( $_POST['mapping_ids'] ) ? (array) wp_unslash( $_POST['mapping_ids'] ) : array();
+		$mapping_ids     = array_values( array_unique( array_filter( array_map( 'absint', $mapping_ids_raw ) ) ) );
+
+		if ( empty( $mapping_ids ) ) {
+			wp_send_json_error( array( 'message' => __( 'No mappings selected.', 'shopify-woo-bridge' ) ), 400 );
+		}
+
+		$state_args_raw = isset( $_POST['state_args'] ) ? (array) wp_unslash( $_POST['state_args'] ) : array();
+		$state_args     = $this->sanitize_mappings_state_args_for_redirect( $state_args_raw );
+
+		$job_token  = wp_generate_password( 20, false, false );
+		$option_key = $this->get_selected_bulk_image_sync_ajax_option_key( $job_token );
+		$state      = array(
+			'mapping_ids'             => $mapping_ids,
+			'offset'                  => 0,
+			'total'                   => $this->get_selected_bulk_image_sync_total_targets( $mapping_ids ),
+			'processed'               => 0,
+			'changed'                 => 0,
+			'unchanged'               => 0,
+			'failed'                  => 0,
+			'skipped'                 => 0,
+			'current_wc_sku'          => '',
+			'current_shopify_item_id' => '',
+			'current_status_message'  => '',
+			'failed_items'            => array(),
+			'state_args'              => $state_args,
+		);
+
+		update_option( $option_key, $state, false );
+
+		wp_send_json_success(
+			array(
+				'jobToken'  => $job_token,
+				'done'      => false,
+				'progress'  => $this->build_bulk_image_sync_progress_payload( $state ),
+			)
+		);
+	}
+
+	/**
+	 * AJAX: Process one selected-row bulk image sync batch.
+	 *
+	 * @return void
+	 */
+	public function ajax_tick_selected_bulk_image_sync() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Unauthorized.', 'shopify-woo-bridge' ) ), 403 );
+		}
+
+		check_ajax_referer( 'swb_bulk_image_sync_ajax', 'nonce' );
+
+		$job_token = isset( $_POST['job_token'] ) ? preg_replace( '/[^a-zA-Z0-9]/', '', (string) wp_unslash( $_POST['job_token'] ) ) : '';
+		if ( '' === $job_token ) {
+			wp_send_json_error( array( 'message' => __( 'Selected bulk image sync session is invalid.', 'shopify-woo-bridge' ) ), 400 );
+		}
+
+		$result = $this->process_selected_bulk_image_sync_job_ajax( $job_token );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ), 400 );
+		}
+
+		wp_send_json_success( $result );
+	}
+
+	/**
+	 * Process one selected-row bulk image sync batch for AJAX loop.
+	 *
+	 * @param string $job_token Job token.
+	 * @return array|WP_Error
+	 */
+	private function process_selected_bulk_image_sync_job_ajax( $job_token ) {
+		$option_key = $this->get_selected_bulk_image_sync_ajax_option_key( $job_token );
+		$state      = get_option( $option_key, null );
+
+		if ( ! is_array( $state ) || empty( $state['mapping_ids'] ) || ! is_array( $state['mapping_ids'] ) ) {
+			delete_option( $option_key );
+			return new WP_Error( 'swb_selected_bulk_sync_expired', __( 'Selected bulk image sync session expired. Please run it again.', 'shopify-woo-bridge' ) );
+		}
+
+		$mapping_ids   = array_values( array_filter( array_map( 'absint', (array) $state['mapping_ids'] ) ) );
+		$offset        = isset( $state['offset'] ) ? absint( $state['offset'] ) : 0;
+		$batch_size    = $this->get_selected_bulk_image_sync_ajax_batch_size();
+		$max_index     = min( count( $mapping_ids ), $offset + $batch_size );
+		$sync_service  = new SWB_Image_Sync();
+		$failed_items  = isset( $state['failed_items'] ) && is_array( $state['failed_items'] ) ? $state['failed_items'] : array();
+
+		for ( $index = $offset; $index < $max_index; $index++ ) {
+			$mapping_id = $mapping_ids[ $index ];
+			$mapping    = SWB_DB::get_mapping( $mapping_id );
+
+			if ( ! $mapping ) {
+				$state['failed']                 = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
+				$state['current_status_message'] = __( 'Mapping not found.', 'shopify-woo-bridge' );
+				$this->add_failed_image_sync_detail( $failed_items, '', '', __( 'Mapping not found.', 'shopify-woo-bridge' ) );
+				continue;
+			}
+
+			$wc_sku                        = trim( (string) ( isset( $mapping->wc_sku ) ? $mapping->wc_sku : '' ) );
+			$shopify_item_id               = trim( (string) ( isset( $mapping->shopify_item_id ) ? $mapping->shopify_item_id : '' ) );
+			$shopify_product_id            = trim( (string) ( isset( $mapping->shopify_product_id ) ? $mapping->shopify_product_id : '' ) );
+			$state['current_wc_sku']       = $wc_sku;
+			$state['current_shopify_item_id'] = $shopify_item_id;
+
+			if ( 1 !== (int) ( isset( $mapping->is_enabled ) ? $mapping->is_enabled : 0 ) ) {
+				$state['skipped']                = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+				$state['current_status_message'] = __( 'Skipped: Mapping is disabled.', 'shopify-woo-bridge' );
+				continue;
+			}
+
+			if ( '' === $shopify_product_id ) {
+				$state['skipped']                = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+				$state['current_status_message'] = __( 'Skipped: Missing Shopify Product ID.', 'shopify-woo-bridge' );
+				continue;
+			}
+
+			$state['processed'] = isset( $state['processed'] ) ? intval( $state['processed'] ) + 1 : 1;
+			$result             = $sync_service->sync_images_for_mapping( $mapping );
+
+			if ( ! empty( $result['success'] ) ) {
+				if ( ! empty( $result['changed'] ) ) {
+					$state['changed']                = isset( $state['changed'] ) ? intval( $state['changed'] ) + 1 : 1;
+					$status                          = 'changed';
+					$state['current_status_message'] = ! empty( $result['message'] ) ? (string) $result['message'] : __( 'Image sync changed media.', 'shopify-woo-bridge' );
+				} else {
+					$state['unchanged']              = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) + 1 : 1;
+					$status                          = 'unchanged';
+					$state['current_status_message'] = ! empty( $result['message'] ) ? (string) $result['message'] : __( 'Image sync unchanged.', 'shopify-woo-bridge' );
+				}
+
+				$this->set_mapping_media_sync_status( $mapping_id, $status, '' );
+				continue;
+			}
+
+			$error_message                   = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
+			$state['failed']                 = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
+			$state['current_status_message'] = $error_message;
+			$this->set_mapping_media_sync_status( $mapping_id, 'error', $error_message );
+			$this->add_failed_image_sync_detail( $failed_items, $shopify_item_id, $wc_sku, $error_message );
+		}
+
+		$state['offset']       = $max_index;
+		$state['failed_items'] = $failed_items;
+
+		if ( $max_index < count( $mapping_ids ) ) {
+			update_option( $option_key, $state, false );
+
+			return array(
+				'done'     => false,
+				'progress' => $this->build_bulk_image_sync_progress_payload( $state ),
+			);
+		}
+
+		delete_option( $option_key );
+
+		$failed   = isset( $state['failed'] ) ? intval( $state['failed'] ) : 0;
+		$changed  = isset( $state['changed'] ) ? intval( $state['changed'] ) : 0;
+		$unchanged = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) : 0;
+		$skipped  = isset( $state['skipped'] ) ? intval( $state['skipped'] ) : 0;
+		$processed = isset( $state['processed'] ) ? intval( $state['processed'] ) : 0;
+
+		$notice_type = $failed > 0 ? 'error' : 'success';
+		$message     = sprintf(
+			/* translators: 1: processed mappings, 2: changed mappings, 3: unchanged mappings, 4: skipped mappings, 5: failed mappings. */
+			__( 'Bulk image sync complete. Processed: %1$d, Changed: %2$d, Unchanged: %3$d, Skipped: %4$d, Failed: %5$d.', 'shopify-woo-bridge' ),
+			$processed,
+			$changed,
+			$unchanged,
+			$skipped,
+			$failed
+		);
+		$message .= $this->build_failed_image_sync_details_message( $failed_items, $failed );
+
+		$state_args = isset( $state['state_args'] ) && is_array( $state['state_args'] ) ? $state['state_args'] : array();
+
+		return array(
+			'done'        => true,
+			'redirectUrl' => $this->get_mappings_notice_url_with_state_args( $notice_type, $message, $state_args ),
+			'progress'    => $this->build_bulk_image_sync_progress_payload( $state ),
+		);
+	}
+
+	/**
+	 * Build option key for selected AJAX bulk image sync state.
+	 *
+	 * @param string $job_token Job token.
+	 * @return string
+	 */
+	private function get_selected_bulk_image_sync_ajax_option_key( $job_token ) {
+		return self::SELECTED_BULK_IMAGE_SYNC_AJAX_JOB_OPTION_PREFIX . $job_token;
+	}
+
+	/**
+	 * Count selected mappings eligible for image sync status updates.
+	 *
+	 * @param array $mapping_ids Selected mapping IDs.
+	 * @return int
+	 */
+	private function get_selected_bulk_image_sync_total_targets( $mapping_ids ) {
+		$total = 0;
+		foreach ( (array) $mapping_ids as $mapping_id ) {
+			$mapping = SWB_DB::get_mapping( absint( $mapping_id ) );
+			if ( ! $mapping ) {
+				continue;
+			}
+
+			if ( 1 !== (int) ( isset( $mapping->is_enabled ) ? $mapping->is_enabled : 0 ) ) {
+				continue;
+			}
+
+			if ( '' === trim( (string) ( isset( $mapping->shopify_product_id ) ? $mapping->shopify_product_id : '' ) ) ) {
+				continue;
+			}
+
+			$total++;
+		}
+
+		return $total;
+	}
+
+	/**
+	 * Sanitize list-table state args sent by AJAX caller.
+	 *
+	 * @param array $raw_args Raw request args.
+	 * @return array
+	 */
+	private function sanitize_mappings_state_args_for_redirect( $raw_args ) {
+		$allowed_keys = array( 'swb_product_type', 'swb_mapping_state', 's', 'orderby', 'order', 'paged' );
+		$sanitized    = array();
+
+		foreach ( (array) $raw_args as $key => $value ) {
+			$key = sanitize_key( (string) $key );
+			if ( ! in_array( $key, $allowed_keys, true ) ) {
+				continue;
+			}
+
+			if ( 'paged' === $key ) {
+				$sanitized[ $key ] = max( 1, absint( $value ) );
+				continue;
+			}
+
+			if ( 's' === $key ) {
+				$sanitized[ $key ] = sanitize_text_field( (string) $value );
+				continue;
+			}
+
+			$sanitized[ $key ] = sanitize_key( (string) $value );
+		}
+
+		return $sanitized;
+	}
+
+	/**
+	 * Build mappings notice URL and append sanitized list-table state args.
+	 *
+	 * @param string $type Notice type.
+	 * @param string $message Notice message.
+	 * @param array  $state_args Sanitized list-table state args.
+	 * @return string
+	 */
+	private function get_mappings_notice_url_with_state_args( $type, $message, $state_args ) {
+		$redirect_args = array_merge(
+			array(
+				'page'        => 'shopify-bridge-mappings',
+				'tab'         => 'mappings',
+				'swb_notice'  => '1',
+				'swb_type'    => $type,
+				'swb_message' => $message,
+			),
+			is_array( $state_args ) ? $this->sanitize_mappings_state_args_for_redirect( $state_args ) : array()
+		);
+
+		return add_query_arg( $redirect_args, admin_url( 'admin.php' ) );
 	}
 
 	/**
@@ -856,10 +1403,13 @@ class SWB_Admin_Mappings {
 				$shopify_product_id = $state['cursor_shopify_product_id'];
 				$wc_sku             = isset( $row->wc_sku ) ? trim( (string) $row->wc_sku ) : '';
 				$mapping_id         = isset( $row->id ) ? absint( $row->id ) : 0;
+				$state['current_wc_sku']          = $wc_sku;
+				$state['current_shopify_item_id'] = isset( $row->shopify_item_id ) ? trim( (string) $row->shopify_item_id ) : '';
 
 				if ( '' === $shopify_product_id ) {
 					$this->set_mapping_media_sync_status( $mapping_id, 'error', __( 'Missing Shopify Product ID.', 'shopify-woo-bridge' ) );
 					$state['skipped'] = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+					$state['current_status_message'] = __( 'Skipped: Missing Shopify Product ID.', 'shopify-woo-bridge' );
 					continue;
 				}
 
@@ -876,9 +1426,11 @@ class SWB_Admin_Mappings {
 					if ( ! empty( $result['changed'] ) ) {
 						$state['changed'] = isset( $state['changed'] ) ? intval( $state['changed'] ) + 1 : 1;
 						$status = 'changed';
+						$state['current_status_message'] = ! empty( $result['message'] ) ? (string) $result['message'] : __( 'Image sync changed media.', 'shopify-woo-bridge' );
 					} else {
 						$state['unchanged'] = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) + 1 : 1;
 						$status = 'unchanged';
+						$state['current_status_message'] = ! empty( $result['message'] ) ? (string) $result['message'] : __( 'Image sync unchanged.', 'shopify-woo-bridge' );
 					}
 
 					$this->set_mapping_media_sync_status( $mapping_id, $status, '' );
@@ -886,6 +1438,7 @@ class SWB_Admin_Mappings {
 					$state['failed'] = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
 					$error_message = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
 					$this->set_mapping_media_sync_status( $mapping_id, 'error', $error_message );
+					$state['current_status_message'] = $error_message;
 					$this->add_failed_image_sync_detail(
 						$failed_items,
 						isset( $row->shopify_item_id ) ? (string) $row->shopify_item_id : '',
@@ -903,7 +1456,7 @@ class SWB_Admin_Mappings {
 		if ( $processed_this_request >= $batch_size || $rows_scanned >= $max_rows_scanned || $has_more_rows ) {
 			$state['failed_items'] = $failed_items;
 			update_option( $option_key, $state, false );
-			$this->redirect_bulk_image_sync_job( $job_token, $product_type );
+			$this->redirect_bulk_image_sync_job( $job_token, $product_type, $state );
 			return;
 		}
 
@@ -991,13 +1544,36 @@ class SWB_Admin_Mappings {
 	 * @param string $product_type Product type filter.
 	 * @return void
 	 */
-	private function redirect_bulk_image_sync_job( $job_token, $product_type ) {
+	private function redirect_bulk_image_sync_job( $job_token, $product_type, $state = array() ) {
+		$processed = isset( $state['changed'], $state['unchanged'], $state['failed'] )
+			? absint( $state['changed'] ) + absint( $state['unchanged'] ) + absint( $state['failed'] )
+			: ( isset( $state['processed'] ) ? absint( $state['processed'] ) : 0 );
+		$skipped   = isset( $state['skipped'] ) ? absint( $state['skipped'] ) : 0;
+		$handled   = $processed + $skipped;
+		$total     = isset( $state['total'] ) ? absint( $state['total'] ) : 0;
+		$wc_sku    = isset( $state['current_wc_sku'] ) ? sanitize_text_field( (string) $state['current_wc_sku'] ) : '';
+		$item_id   = isset( $state['current_shopify_item_id'] ) ? sanitize_text_field( (string) $state['current_shopify_item_id'] ) : '';
+		$status_message = isset( $state['current_status_message'] ) ? sanitize_text_field( (string) $state['current_status_message'] ) : '';
+		$changed        = isset( $state['changed'] ) ? absint( $state['changed'] ) : 0;
+		$unchanged      = isset( $state['unchanged'] ) ? absint( $state['unchanged'] ) : 0;
+		$failed         = isset( $state['failed'] ) ? absint( $state['failed'] ) : 0;
+
 		$redirect_args = array(
 			'page'                          => 'shopify-bridge-mappings',
 			'tab'                           => 'mappings',
 			'swb_bulk_sync_images_continue' => '1',
 			'swb_bulk_sync_images_job'      => $job_token,
 			'swb_job_nonce'                 => wp_create_nonce( 'swb_bulk_sync_images_job_' . $job_token ),
+			'swb_progress_action'           => 'images',
+			'swb_progress_handled'          => $handled,
+			'swb_progress_processed'        => $processed,
+			'swb_progress_total'            => $total,
+			'swb_progress_wc_sku'           => $wc_sku,
+			'swb_progress_shopify_item_id'  => $item_id,
+			'swb_progress_status_message'   => $status_message,
+			'swb_progress_changed'          => $changed,
+			'swb_progress_unchanged'        => $unchanged,
+			'swb_progress_failed'           => $failed,
 		);
 
 		if ( 'all' !== $product_type ) {
@@ -1005,6 +1581,53 @@ class SWB_Admin_Mappings {
 		}
 
 		wp_safe_redirect( add_query_arg( $redirect_args, admin_url( 'admin.php' ) ) );
+	}
+
+	/**
+	 * Resolve total mappings expected for bulk image sync progress.
+	 *
+	 * @param string $product_type Product type filter.
+	 * @return int
+	 */
+	private function get_bulk_image_sync_total( $product_type ) {
+		$product_type = $this->normalize_product_type_filter( $product_type );
+
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'swb_mappings';
+
+		if ( 'all' === $product_type ) {
+			return (int) $wpdb->get_var(
+				"
+				SELECT COUNT(*)
+				FROM {$table_name}
+				WHERE is_enabled = 1
+				AND shopify_product_id != ''
+				"
+			);
+		}
+
+		$rows = $wpdb->get_results(
+			"
+			SELECT wc_sku
+			FROM {$table_name}
+			WHERE is_enabled = 1
+			AND shopify_product_id != ''
+			"
+		);
+
+		if ( empty( $rows ) ) {
+			return 0;
+		}
+
+		$total = 0;
+		foreach ( $rows as $row ) {
+			$wc_sku = isset( $row->wc_sku ) ? trim( (string) $row->wc_sku ) : '';
+			if ( $this->is_wc_sku_matching_product_type( $wc_sku, $product_type ) ) {
+				$total++;
+			}
+		}
+
+		return $total;
 	}
 
 	/**
@@ -1017,6 +1640,34 @@ class SWB_Admin_Mappings {
 		$batch_size = intval( $batch_size );
 
 		return max( 1, min( 50, $batch_size ) );
+	}
+
+	/**
+	 * Resolve AJAX bulk image sync batch size.
+	 *
+	 * Defaults to 1 for finer-grained live progress updates.
+	 *
+	 * @return int
+	 */
+	private function get_bulk_image_sync_ajax_batch_size() {
+		$batch_size = apply_filters( 'swb_bulk_image_sync_ajax_batch_size', 1 );
+		$batch_size = intval( $batch_size );
+
+		return max( 1, min( 20, $batch_size ) );
+	}
+
+	/**
+	 * Resolve AJAX selected-row image sync batch size.
+	 *
+	 * Defaults to 1 for finer-grained live progress updates.
+	 *
+	 * @return int
+	 */
+	private function get_selected_bulk_image_sync_ajax_batch_size() {
+		$batch_size = apply_filters( 'swb_selected_bulk_image_sync_ajax_batch_size', 1 );
+		$batch_size = intval( $batch_size );
+
+		return max( 1, min( 20, $batch_size ) );
 	}
 
 	/**
@@ -1187,6 +1838,18 @@ class SWB_Admin_Mappings {
 	 * @param string $product_type Product type filter.
 	 */
 	private function redirect_bulk_action_notice( $type, $message, $product_type ) {
+		wp_safe_redirect( $this->get_bulk_action_notice_url( $type, $message, $product_type ) );
+	}
+
+	/**
+	 * Build notice URL for mappings page while preserving product type filter.
+	 *
+	 * @param string $type Notice type.
+	 * @param string $message Notice message.
+	 * @param string $product_type Product type filter.
+	 * @return string
+	 */
+	private function get_bulk_action_notice_url( $type, $message, $product_type ) {
 		$redirect_args = array(
 			'page'        => 'shopify-bridge-mappings',
 			'tab'         => 'mappings',
@@ -1199,8 +1862,7 @@ class SWB_Admin_Mappings {
 			$redirect_args['swb_product_type'] = $this->normalize_product_type_filter( $product_type );
 		}
 
-		$redirect_url = add_query_arg( $redirect_args, admin_url( 'admin.php' ) );
-		wp_safe_redirect( $redirect_url );
+		return add_query_arg( $redirect_args, admin_url( 'admin.php' ) );
 	}
 
 	/**

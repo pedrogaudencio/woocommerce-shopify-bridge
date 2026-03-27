@@ -1829,17 +1829,21 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$state = array(
 			'mapping_ids' => $mapping_ids,
 			'offset'      => 0,
+			'total'       => $this->get_selected_bulk_image_sync_total_targets( $mapping_ids ),
 			'processed'   => 0,
 			'updated'     => 0,
 			'unchanged'   => 0,
 			'skipped'     => 0,
 			'failed'      => 0,
+			'current_wc_sku' => '',
+			'current_shopify_item_id' => '',
+			'current_status_message' => '',
 			'failed_items' => array(),
 			'state_args'  => is_array( $state_args ) ? $state_args : array(),
 		);
 
 		update_option( $option_key, $state, false );
-		$this->redirect_selected_bulk_image_sync_job( $job_token, $state['state_args'] );
+		$this->redirect_selected_bulk_image_sync_job( $job_token, $state['state_args'], $state );
 	}
 
 	/**
@@ -1881,6 +1885,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			$mapping    = SWB_DB::get_mapping( $mapping_id );
 			if ( ! $mapping ) {
 				$state['failed'] = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
+				$state['current_status_message'] = __( 'Mapping not found.', 'shopify-woo-bridge' );
 				$this->add_failed_image_sync_detail( $failed_items, '', '', __( 'Mapping not found.', 'shopify-woo-bridge' ) );
 				continue;
 			}
@@ -1888,12 +1893,16 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			$is_enabled = (int) $this->get_item_value( $mapping, 'is_enabled', 0 );
 			if ( 1 !== $is_enabled ) {
 				$state['skipped'] = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+				$state['current_status_message'] = __( 'Skipped: Mapping is disabled.', 'shopify-woo-bridge' );
 				continue;
 			}
 
 			$shopify_product_id = (string) $this->get_item_value( $mapping, 'shopify_product_id', '' );
+			$state['current_wc_sku']          = (string) $this->get_item_value( $mapping, 'wc_sku', '' );
+			$state['current_shopify_item_id'] = (string) $this->get_item_value( $mapping, 'shopify_item_id', '' );
 			if ( '' === $shopify_product_id ) {
 				$state['skipped'] = isset( $state['skipped'] ) ? intval( $state['skipped'] ) + 1 : 1;
+				$state['current_status_message'] = __( 'Skipped: Missing Shopify Product ID.', 'shopify-woo-bridge' );
 				continue;
 			}
 
@@ -1904,14 +1913,17 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				$this->set_media_sync_status( $mapping_id, ! empty( $result['changed'] ) ? 'changed' : 'unchanged', '' );
 				if ( ! empty( $result['changed'] ) ) {
 					$state['updated'] = isset( $state['updated'] ) ? intval( $state['updated'] ) + 1 : 1;
+					$state['current_status_message'] = ! empty( $result['message'] ) ? (string) $result['message'] : __( 'Image sync changed media.', 'shopify-woo-bridge' );
 				} else {
 					$state['unchanged'] = isset( $state['unchanged'] ) ? intval( $state['unchanged'] ) + 1 : 1;
+					$state['current_status_message'] = ! empty( $result['message'] ) ? (string) $result['message'] : __( 'Image sync unchanged.', 'shopify-woo-bridge' );
 				}
 				continue;
 			}
 
 			$error_message = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
 			$this->set_media_sync_status( $mapping_id, 'error', $error_message );
+			$state['current_status_message'] = $error_message;
 			$this->add_failed_image_sync_detail(
 				$failed_items,
 				(string) $this->get_item_value( $mapping, 'shopify_item_id', '' ),
@@ -1927,7 +1939,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 
 		if ( $max_index < count( $mapping_ids ) ) {
 			update_option( $option_key, $state, false );
-			$this->redirect_selected_bulk_image_sync_job( $job_token, $state_args );
+			$this->redirect_selected_bulk_image_sync_job( $job_token, $state_args, $state );
 			return;
 		}
 
@@ -1985,7 +1997,19 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 	 * @param array  $state_args State query args to preserve.
 	 * @return void
 	 */
-	private function redirect_selected_bulk_image_sync_job( $job_token, $state_args ) {
+	private function redirect_selected_bulk_image_sync_job( $job_token, $state_args, $state = array() ) {
+		$processed = isset( $state['updated'], $state['unchanged'], $state['failed'] )
+			? absint( $state['updated'] ) + absint( $state['unchanged'] ) + absint( $state['failed'] )
+			: ( isset( $state['processed'] ) ? absint( $state['processed'] ) : 0 );
+		$handled   = isset( $state['offset'] ) ? absint( $state['offset'] ) : $processed;
+		$total     = isset( $state['total'] ) ? absint( $state['total'] ) : 0;
+		$wc_sku    = isset( $state['current_wc_sku'] ) ? sanitize_text_field( (string) $state['current_wc_sku'] ) : '';
+		$item_id   = isset( $state['current_shopify_item_id'] ) ? sanitize_text_field( (string) $state['current_shopify_item_id'] ) : '';
+		$status_message = isset( $state['current_status_message'] ) ? sanitize_text_field( (string) $state['current_status_message'] ) : '';
+		$changed        = isset( $state['updated'] ) ? absint( $state['updated'] ) : 0;
+		$unchanged      = isset( $state['unchanged'] ) ? absint( $state['unchanged'] ) : 0;
+		$failed         = isset( $state['failed'] ) ? absint( $state['failed'] ) : 0;
+
 		wp_safe_redirect(
 			add_query_arg(
 				array_merge(
@@ -1995,12 +2019,50 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 						'swb_bulk_sync_images_selected_continue' => '1',
 						'swb_bulk_sync_images_selected_job'      => $job_token,
 						'swb_job_nonce'                        => wp_create_nonce( 'swb_selected_bulk_sync_images_job_' . $job_token ),
+						'swb_progress_action'                  => 'images',
+						'swb_progress_handled'                 => $handled,
+						'swb_progress_processed'               => $processed,
+						'swb_progress_total'                   => $total,
+						'swb_progress_wc_sku'                  => $wc_sku,
+						'swb_progress_shopify_item_id'         => $item_id,
+						'swb_progress_status_message'          => $status_message,
+						'swb_progress_changed'                 => $changed,
+						'swb_progress_unchanged'               => $unchanged,
+						'swb_progress_failed'                  => $failed,
 					),
 					is_array( $state_args ) ? $state_args : array()
 				),
 				admin_url( 'admin.php' )
 			)
 		);
+	}
+
+	/**
+	 * Count selected mappings that are eligible for image sync status updates.
+	 *
+	 * @param array $mapping_ids Selected mapping IDs.
+	 * @return int
+	 */
+	private function get_selected_bulk_image_sync_total_targets( $mapping_ids ) {
+		$total = 0;
+		foreach ( (array) $mapping_ids as $mapping_id ) {
+			$mapping = SWB_DB::get_mapping( absint( $mapping_id ) );
+			if ( ! $mapping ) {
+				continue;
+			}
+
+			if ( 1 !== (int) $this->get_item_value( $mapping, 'is_enabled', 0 ) ) {
+				continue;
+			}
+
+			if ( '' === trim( (string) $this->get_item_value( $mapping, 'shopify_product_id', '' ) ) ) {
+				continue;
+			}
+
+			$total++;
+		}
+
+		return $total;
 	}
 
 	/**
