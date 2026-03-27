@@ -1460,6 +1460,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			$enabled     = 0;
 			$disabled    = 0;
 			$sync_images = null;
+			$failed_image_items = array();
 
 			foreach ( $mapping_ids as $mapping_id ) {
 				$mapping = SWB_DB::get_mapping( $mapping_id );
@@ -1536,6 +1537,12 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 					'error',
 					! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' )
 				);
+				$this->add_failed_image_sync_detail(
+					$failed_image_items,
+					(string) $this->get_item_value( $mapping, 'shopify_item_id', '' ),
+					(string) $this->get_item_value( $mapping, 'wc_sku', '' ),
+					! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' )
+				);
 				$failed++;
 			}
 
@@ -1561,6 +1568,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 					$skipped,
 					$failed
 				);
+				$message .= $this->build_failed_image_sync_details_message( $failed_image_items, $failed );
 			} elseif ( 'bulk-reset-media-status' === $bulk_action ) {
 				$message = sprintf(
 					/* translators: 1: processed mappings, 2: failed mappings. */
@@ -1826,6 +1834,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			'unchanged'   => 0,
 			'skipped'     => 0,
 			'failed'      => 0,
+			'failed_items' => array(),
 			'state_args'  => is_array( $state_args ) ? $state_args : array(),
 		);
 
@@ -1865,12 +1874,14 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$batch_size  = $this->get_selected_bulk_image_sync_batch_size();
 		$max_index   = min( count( $mapping_ids ), $offset + $batch_size );
 		$sync_images = new SWB_Image_Sync();
+		$failed_items = isset( $state['failed_items'] ) && is_array( $state['failed_items'] ) ? $state['failed_items'] : array();
 
 		for ( $index = $offset; $index < $max_index; $index++ ) {
 			$mapping_id = $mapping_ids[ $index ];
 			$mapping    = SWB_DB::get_mapping( $mapping_id );
 			if ( ! $mapping ) {
 				$state['failed'] = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
+				$this->add_failed_image_sync_detail( $failed_items, '', '', __( 'Mapping not found.', 'shopify-woo-bridge' ) );
 				continue;
 			}
 
@@ -1899,15 +1910,19 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 				continue;
 			}
 
-			$this->set_media_sync_status(
-				$mapping_id,
-				'error',
-				! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' )
+			$error_message = ! empty( $result['message'] ) ? $result['message'] : __( 'Image sync failed.', 'shopify-woo-bridge' );
+			$this->set_media_sync_status( $mapping_id, 'error', $error_message );
+			$this->add_failed_image_sync_detail(
+				$failed_items,
+				(string) $this->get_item_value( $mapping, 'shopify_item_id', '' ),
+				(string) $this->get_item_value( $mapping, 'wc_sku', '' ),
+				$error_message
 			);
 			$state['failed'] = isset( $state['failed'] ) ? intval( $state['failed'] ) + 1 : 1;
 		}
 
 		$state['offset'] = $max_index;
+		$state['failed_items'] = $failed_items;
 		$state_args      = isset( $state['state_args'] ) && is_array( $state['state_args'] ) ? $state['state_args'] : array();
 
 		if ( $max_index < count( $mapping_ids ) ) {
@@ -1934,6 +1949,7 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 			$skipped,
 			$failed
 		);
+		$message .= $this->build_failed_image_sync_details_message( $failed_items, $failed );
 
 		wp_safe_redirect(
 			add_query_arg(
@@ -1997,6 +2013,79 @@ class SWB_Mapping_List_Table extends WP_List_Table {
 		$batch_size = intval( $batch_size );
 
 		return max( 1, min( 100, $batch_size ) );
+	}
+
+	/**
+	 * Track one failed image sync item for completion notice details.
+	 *
+	 * @param array  $failed_items Accumulator.
+	 * @param string $shopify_item_id Shopify inventory item ID.
+	 * @param string $wc_sku WooCommerce SKU.
+	 * @param string $reason Failure reason.
+	 * @return void
+	 */
+	private function add_failed_image_sync_detail( &$failed_items, $shopify_item_id, $wc_sku, $reason ) {
+		if ( ! is_array( $failed_items ) ) {
+			$failed_items = array();
+		}
+
+		if ( count( $failed_items ) >= 15 ) {
+			return;
+		}
+
+		$failed_items[] = array(
+			'shopify_item_id' => trim( (string) $shopify_item_id ),
+			'wc_sku'          => trim( (string) $wc_sku ),
+			'reason'          => sanitize_text_field( (string) $reason ),
+		);
+	}
+
+	/**
+	 * Build failed image sync details suffix for notice message.
+	 *
+	 * @param array $failed_items Failed item detail rows.
+	 * @param int   $failed_total Total failed count.
+	 * @return string
+	 */
+	private function build_failed_image_sync_details_message( $failed_items, $failed_total ) {
+		$failed_items = is_array( $failed_items ) ? $failed_items : array();
+		$failed_total = absint( $failed_total );
+
+		if ( $failed_total <= 0 || empty( $failed_items ) ) {
+			return '';
+		}
+
+		$parts = array();
+		foreach ( $failed_items as $failed_item ) {
+			$item_id = isset( $failed_item['shopify_item_id'] ) ? trim( (string) $failed_item['shopify_item_id'] ) : '';
+			$wc_sku  = isset( $failed_item['wc_sku'] ) ? trim( (string) $failed_item['wc_sku'] ) : '';
+			$reason  = isset( $failed_item['reason'] ) ? trim( (string) $failed_item['reason'] ) : '';
+			if ( '' === $reason ) {
+				$reason = __( 'Unknown error', 'shopify-woo-bridge' );
+			}
+
+			$parts[] = sprintf(
+				'%s | SKU: %s (%s)',
+				'' === $item_id ? __( 'N/A', 'shopify-woo-bridge' ) : $item_id,
+				'' === $wc_sku ? __( 'N/A', 'shopify-woo-bridge' ) : $wc_sku,
+				$reason
+			);
+		}
+
+		$remaining = max( 0, $failed_total - count( $failed_items ) );
+		if ( $remaining > 0 ) {
+			$parts[] = sprintf(
+				/* translators: %d additional failed items not listed. */
+				__( '+%d more failed items', 'shopify-woo-bridge' ),
+				$remaining
+			);
+		}
+
+		return ' ' . sprintf(
+			/* translators: %s failed image sync item details in the form "inventory_id | SKU: value (reason)". */
+			__( 'Failed items: %s', 'shopify-woo-bridge' ),
+			implode( '; ', $parts )
+		);
 	}
 
 	/**
